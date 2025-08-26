@@ -32,7 +32,7 @@ def line_intersection(p1, p2, p3, p4):
 
 
 def rect_edge_intersection(rect, p_center, p_other):
-    """Finde den echten Schnittpunkt der Linie center->other mit dem Rechteckrand."""
+    """ Finde den echten Schnittpunkt der Linie center->other mit dem Rechteckrand."""
     edges = [
         (QPointF(rect.left(), rect.top()), QPointF(rect.right(), rect.top())),  # oben
         (QPointF(rect.right(), rect.top()), QPointF(rect.right(), rect.bottom())),  # rechts
