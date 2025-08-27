@@ -9,8 +9,9 @@ from PyQt5.QtCore import Qt, QRect, QPointF
 from PyQt5.QtWidgets import QInputDialog
 from collections import namedtuple
 
-Dobject = namedtuple("Dobject", ["obj", "name"]) #drawable object
-Dconnection = namedtuple("Dconnection", ["rect1","rect2","name"])
+#Listen von Tupeln
+Dobject = namedtuple("Dobject", ["obj", "name"])            #drawable object, obj ist z.B. vom Typ QRect
+Dconnection = namedtuple("Dconnection", ["i1","i2","name"]) # i1,i2: Index der beiden Objekte (ID's sind zwischen Programmstarts nicht stabil')
 
 def line_intersection(p1, p2, p3, p4):
     """Schnittpunkt zweier Liniensegmente (p1-p2 und p3-p4)."""
@@ -54,59 +55,56 @@ def rect_edge_intersection(rect, p_center, p_other):
 class DrawingWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.rectangles = []
+        self.dobjects = []  # Drawable Objects
         self.connections = []
         self.current_rect = None
         self.selected_rect = None
         self.offset = None
         self.line_start_rect = None 
+        self.line_start_index = None
         self.mode = None
 
 
-        # Beispiel: Zwei Rechtecke + Verbindung
-        r1 = QRect(100, 100, 100, 80)
-        name1="Block A"
-        r2 = QRect(300, 200, 120, 90)
-        name2="Blocl B"
-        self.rectangles.append(Dobject(obj=r1,name=name1))
-        self.rectangles.append(Dobject(obj=r2, name=name2))
-        self.connections.append(Dconnection(rect1=r1,rect2=r2,name="Verbindung"))
     
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             # Prüfen auf Rechteck-Klick für Verschieben oder Linienstart
             if(self.mode == "move"):
-                for rect,name in reversed(self.rectangles):
+                #for rect,name in reversed(self.dobjects):
+                for rect,name in self.dobjects:
                     if rect.contains(event.pos()):
                         self.selected_rect = rect
                         self.offset = event.pos() - rect.topLeft()
                         return
-
-            for rect,name in reversed(self.rectangles):
-                if rect.contains(event.pos()):
+            i=-1
+            #for ob,name in reversed(self.dobjects):
+            for ob,name in self.dobjects:
+                i=i+1 # Index für gefundenes Objekt
+                if ob.contains(event.pos()):
                     if self.line_start_rect is None:
                         # Erste Auswahl für Linie
-                        self.line_start_rect = rect
+                        self.line_start_rect = ob
+                        self.line_start_index = i
                         return
                     else:
                         # Zweite Auswahl -> Linie erstellen
-                        if rect != self.line_start_rect:
-                            #self.connections.append((self.line_start_rect, rect))
-                            self.connections.append(Dconnection(rect1=self.line_start_rect,rect2=rect,name="Verbindung"))
+                        if ob != self.line_start_rect:
+                           self.connections.append(Dconnection(i2=i,i1=self.line_start_index,name="Verbindung"))
                         self.line_start_rect = None
+                        self.line_start_index = None
                         self.update()
                         return
 
            
             
-            # Name abfragen  -> Verändert die Daten, current_rect erst nach der Namenseingabe erstellen, oder
+            # Vorsicht: Name interaktib abfragen  -> Verändert die Daten, current_rect erst nach der Namenseingabe erstellen, oder
             #den Namen erst nach dem MouseRelease abfragen.
             #text, ok = QInputDialog.getText(self, "Blockname", "Name für das Rechteck eingeben:")
             
             # Rechteck erstellen
             self.current_rect = QRect(event.pos(), event.pos())
             obj=Dobject(self.current_rect,"Name")
-            self.rectangles.append(obj)
+            self.dobjects.append(obj)
             self.update()
             
     def mouseMoveEvent(self, event):
@@ -137,7 +135,7 @@ class DrawingWidget(QWidget):
         painter.setPen(pen)
 
         # Rechtecke zeichnen
-        for dobj in self.rectangles:
+        for dobj in self.dobjects:
             painter.drawRect(dobj.obj)
             painter.drawText(dobj.obj, Qt.AlignCenter, dobj.name)
 
@@ -145,9 +143,9 @@ class DrawingWidget(QWidget):
         line_pen = QPen(QColor(200, 0, 0), 2)
         painter.setPen(line_pen)
         for c in self.connections:
-            c1, c2 = QPointF(c.rect1.center()), QPointF(c.rect2.center())
-            p1 = rect_edge_intersection(c.rect1, c1, c2)
-            p2 = rect_edge_intersection(c.rect2, c2, c1)
+            c1, c2 = QPointF(self.dobjects[c.i1].obj.center()), QPointF(self.dobjects[c.i2].obj.center())
+            p1 = rect_edge_intersection(self.dobjects[c.i1].obj,c1,c2)
+            p2 = rect_edge_intersection(self.dobjects[c.i2].obj,c2,c1)
             blue_pen = QPen(QColor(0, 0, 255), 2)
             painter.setPen(blue_pen)
             painter.drawLine(p1, p2)
@@ -249,8 +247,9 @@ class DrawingWidget(QWidget):
 
     def save_to_file(self, filename):
         data = {
-           'rectangles': [{'x': r.x(), 'y': r.y(), 'w': r.width(), 'h': r.height()} for r in self.rectangles],
-           'connections': [(self.rectangles.index(r1), self.rectangles.index(r2)) for r1, r2 in self.connections]
+           'dobjects': [{'x': r.obj.x(), 'y': r.obj.y(), 'w': r.obj.width(), 'h': r.obj.height(), 'n':r.name} for r in self.dobjects],
+           'connections': [(i1, i2, n) for i1, i2, n in self.connections]
+         
         }
         with open(filename, 'w') as f:
            json.dump(data, f)
@@ -258,8 +257,17 @@ class DrawingWidget(QWidget):
     def load_from_file(self, filename):
         with open(filename, 'r') as f:
             data = json.load(f)
-        self.rectangles = [QRect(d['x'], d['y'], d['w'], d['h']) for d in data['rectangles']]
-        self.connections = [(self.rectangles[i], self.rectangles[j]) for i, j in data['connections']]
+        
+        self.dobjects.clear
+        self.connections.clear
+        self.update
+        for d in data['dobjects']:
+            rect = QRect(d['x'], d['y'], d['w'], d['h'])
+            name1 = d['n']
+            self.dobjects.append(Dobject(obj=rect,name=name1))
+
+        for i,j,n in data['connections']:
+            self.connections.append(Dconnection(i1=i,i2=j,name=n))
         self.update()
 
 
