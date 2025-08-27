@@ -1,11 +1,16 @@
-import sys
+﻿import sys
 import json
+import math
+from PyQt5.QtGui import QPolygonF
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QFileDialog, QPushButton, QVBoxLayout
 from PyQt5.QtGui import QPainter, QPen, QColor
 from PyQt5.QtGui import QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRect, QPointF
+from PyQt5.QtWidgets import QInputDialog
+from collections import namedtuple
 
-
+Dobject = namedtuple("Dobject", ["obj", "name"]) #drawable object
+Dconnection = namedtuple("Dconnection", ["rect1","rect2","name"])
 
 def line_intersection(p1, p2, p3, p4):
     """Schnittpunkt zweier Liniensegmente (p1-p2 und p3-p4)."""
@@ -22,7 +27,7 @@ def line_intersection(p1, p2, p3, p4):
           (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
     inter = QPointF(px, py)
 
-    # pr�fen, ob Schnittpunkt innerhalb der beiden Segmente liegt
+    # prüfen, ob Schnittpunkt innerhalb der beiden Segmente liegt
     if (min(x1, x2) - 0.1 <= px <= max(x1, x2) + 0.1 and
         min(y1, y2) - 0.1 <= py <= max(y1, y2) + 0.1 and
         min(x3, x4) - 0.1 <= px <= max(x3, x4) + 0.1 and
@@ -60,58 +65,50 @@ class DrawingWidget(QWidget):
 
         # Beispiel: Zwei Rechtecke + Verbindung
         r1 = QRect(100, 100, 100, 80)
+        name1="Block A"
         r2 = QRect(300, 200, 120, 90)
-        self.rectangles.extend([r1, r2])
-        self.connections.append((r1, r2))
-
-    # def mousePressEvent(self, event):
-    #    if event.button() == Qt.LeftButton:
-    #         for rect in reversed(self.rectangles):
-    #             if rect.contains(event.pos()):
-    #                 self.selected_rect = rect
-    #                 self.offset = event.pos() - rect.topLeft()
-    #                 return
-
-    #         self.current_rect = QRect(event.pos(), event.pos())
-    #         self.rectangles.append(self.current_rect) 
-
+        name2="Blocl B"
+        self.rectangles.append(Dobject(obj=r1,name=name1))
+        self.rectangles.append(Dobject(obj=r2, name=name2))
+        self.connections.append(Dconnection(rect1=r1,rect2=r2,name="Verbindung"))
+    
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            # Pr�fen auf Rechteck-Klick f�r Verschieben oder Linienstart
+            # Prüfen auf Rechteck-Klick für Verschieben oder Linienstart
             if(self.mode == "move"):
-                for rect in reversed(self.rectangles):
+                for rect,name in reversed(self.rectangles):
                     if rect.contains(event.pos()):
                         self.selected_rect = rect
                         self.offset = event.pos() - rect.topLeft()
                         return
 
-            for rect in reversed(self.rectangles):
+            for rect,name in reversed(self.rectangles):
                 if rect.contains(event.pos()):
                     if self.line_start_rect is None:
-                        # Erste Auswahl f�r Linie
+                        # Erste Auswahl für Linie
                         self.line_start_rect = rect
                         return
                     else:
                         # Zweite Auswahl -> Linie erstellen
                         if rect != self.line_start_rect:
-                            self.connections.append((self.line_start_rect, rect))
+                            #self.connections.append((self.line_start_rect, rect))
+                            self.connections.append(Dconnection(rect1=self.line_start_rect,rect2=rect,name="Verbindung"))
                         self.line_start_rect = None
                         self.update()
                         return
 
+           
+            
+            # Name abfragen  -> Verändert die Daten, current_rect erst nach der Namenseingabe erstellen, oder
+            #den Namen erst nach dem MouseRelease abfragen.
+            #text, ok = QInputDialog.getText(self, "Blockname", "Name für das Rechteck eingeben:")
+            
             # Rechteck erstellen
             self.current_rect = QRect(event.pos(), event.pos())
-            self.rectangles.append(self.current_rect)
-
-    #def mouseMoveEvent(self, event):
-    #    if self.selected_rect is not None and self.offset is not None:
-    #        new_top_left = event.pos() - self.offset
-    #        self.selected_rect.moveTopLeft(new_top_left)
-    #        self.update()
-    #    elif self.current_rect is not None:
-    #        self.current_rect.setBottomRight(event.pos())
-    #        self.update()
-
+            obj=Dobject(self.current_rect,"Name")
+            self.rectangles.append(obj)
+            self.update()
+            
     def mouseMoveEvent(self, event):
         if(self.mode == "move"):
             if self.selected_rect is not None and self.offset is not None:
@@ -129,13 +126,6 @@ class DrawingWidget(QWidget):
             self.update()
         
 
-    #def mouseReleaseEvent(self, event):
-    #    if self.selected_rect is not None:
-    #        self.selected_rect = None
-    #        self.offset = None
-    #    elif self.current_rect is not None:
-    #        self.current_rect = None
-
     def mouseReleaseEvent(self, event):
         self.current_rect = None
         self.selected_rect = None
@@ -147,36 +137,130 @@ class DrawingWidget(QWidget):
         painter.setPen(pen)
 
         # Rechtecke zeichnen
-        for rect in self.rectangles:
-            painter.drawRect(rect)
+        for dobj in self.rectangles:
+            painter.drawRect(dobj.obj)
+            painter.drawText(dobj.obj, Qt.AlignCenter, dobj.name)
 
         # Verbindungen zeichnen
         line_pen = QPen(QColor(200, 0, 0), 2)
         painter.setPen(line_pen)
-        for r1, r2 in self.connections:
-            c1, c2 = QPointF(r1.center()), QPointF(r2.center())
-            p1 = rect_edge_intersection(r1, c1, c2)
-            p2 = rect_edge_intersection(r2, c2, c1)
+        for c in self.connections:
+            c1, c2 = QPointF(c.rect1.center()), QPointF(c.rect2.center())
+            p1 = rect_edge_intersection(c.rect1, c1, c2)
+            p2 = rect_edge_intersection(c.rect2, c2, c1)
+            blue_pen = QPen(QColor(0, 0, 255), 2)
+            painter.setPen(blue_pen)
             painter.drawLine(p1, p2)
+            self.draw_arrow(painter, p1, p2)
+            self.draw_text_on_line(painter, p1, p2, "Test")
+            red_pen = QPen(QColor(255, 0, 0), 2)  # R=255, G=0, B=0
+            painter.setPen(red_pen)
+            self.draw_parallel_line(painter, p1, p2, 20, 80)
+        
+    """Zeichnet einen Pfeilkopf an 'end' in Richtung von 'start' → 'end'"""        
+    def draw_arrow(self, painter, start, end): 
+   
+            # Richtung der Linie
+            dx = end.x() -start.x()
+            dy = end.y() - start.y()
+            angle = math.atan2(dy, dx)
 
+            # Größe des Pfeilkopfs
+            arrow_size = 12
+
+            # Zwei Punkte für die Seitenflügel
+            pa = QPointF(
+                end.x() - arrow_size * math.cos(angle - math.pi / 6),
+                end.y() - arrow_size * math.sin(angle - math.pi / 6)
+            )
+            pb = QPointF(
+                end.x() - arrow_size * math.cos(angle + math.pi / 6),
+                end.y() - arrow_size * math.sin(angle + math.pi / 6)
+            )
+
+            # Polygon (Pfeilspitze)
+            arrow_head = QPolygonF([end, pa, pb])
+            painter.setBrush(QColor(200, 0, 0))  # rote Füllung
+            painter.drawPolygon(arrow_head)
+    
+    def draw_parallel_line(self, painter, p1, p2, offset=20, shorten=40):
+        import math
+        dx = p2.x() - p1.x()
+        dy = p2.y() - p1.y()
+        length = math.hypot(dx, dy)
+
+        if length == 0:
+            return
+
+        # Normalenvektor für den Versatz berechnen
+        nx = -dy / length * offset
+        ny = dx / length * offset
+
+        # Neue Start- und Endpunkte mit Versatz
+        q1 = QPointF(p1.x() + nx, p1.y() + ny)
+        q2 = QPointF(p2.x() + nx, p2.y() + ny)
+
+        # Kürzen: von beiden Enden jeweils shorten/2 abziehen
+        shrink = shorten / 2
+        ux = dx / length
+        uy = dy / length
+        q1 = QPointF(q1.x() + ux * shrink, q1.y() + uy * shrink)
+        q2 = QPointF(q2.x() - ux * shrink, q2.y() - uy * shrink)
+
+        # Zeichnen
+        painter.drawLine(q1, q2)
+        self.draw_arrow(painter, q1, q2)
+ 
+            
+    def draw_text_on_line(self, painter, p1, p2, text):
+        import math
+        dx = p2.x() - p1.x()
+        dy = p2.y() - p1.y()
+        angle = math.degrees(math.atan2(dy, dx))  # Grad für rotate()
+
+        # sicherstellen, dass Text nicht auf dem Kopf steht
+        if angle > 90 or angle < -90:
+            angle += 180
+
+        # Mittelpunkt der Linie
+        mx = (p1.x() + p2.x()) / 2
+        my = (p1.y() + p2.y()) / 2
+
+        # Abstand von der Linie (normale Richtung)
+        offset = 15
+        length = math.hypot(dx, dy)
+        if(length == 0):
+            length=0.001
+        nx = -dy / length * offset
+        ny = dx / length * offset
+
+        painter.save()  # aktuellen Zustand merken
+        painter.translate(mx + nx, my + ny)
+        painter.rotate(angle)
+        painter.drawText(0, 0, text)
+        painter.restore()  # Zustand zurücksetzen
+
+
+
+    
     def set_mode(self,mode):
         self.mode =mode 
 
 
-# def save_to_file(self, filename):
-#       data = {
-#            'rectangles': [{'x': r.x(), 'y': r.y(), 'w': r.width(), 'h': r.height()} for r in self.rectangles],
-#            'connections': [(self.rectangles.index(r1), self.rectangles.index(r2)) for r1, r2 in self.connections]
-#        }
-#        with open(filename, 'w') as f:
-#            json.dump(data, f)
+    def save_to_file(self, filename):
+        data = {
+           'rectangles': [{'x': r.x(), 'y': r.y(), 'w': r.width(), 'h': r.height()} for r in self.rectangles],
+           'connections': [(self.rectangles.index(r1), self.rectangles.index(r2)) for r1, r2 in self.connections]
+        }
+        with open(filename, 'w') as f:
+           json.dump(data, f)
 
-#def load_from_file(self, filename):
-#        with open(filename, 'r') as f:
-#            data = json.load(f)
-#        self.rectangles = [QRect(d['x'], d['y'], d['w'], d['h']) for d in data['rectangles']]
-#        self.connections = [(self.rectangles[i], self.rectangles[j]) for i, j in data['connections']]
-#        self.update()
+    def load_from_file(self, filename):
+        with open(filename, 'r') as f:
+            data = json.load(f)
+        self.rectangles = [QRect(d['x'], d['y'], d['w'], d['h']) for d in data['rectangles']]
+        self.connections = [(self.rectangles[i], self.rectangles[j]) for i, j in data['connections']]
+        self.update()
 
 
 
@@ -198,8 +282,8 @@ class MainWindow(QMainWindow):
         drawbox_btn.clicked.connect(lambda: self.drawing_widget.set_mode("drawbox"))
         drawline_btn.clicked.connect(lambda: self.drawing_widget.set_mode("drawline"))
         
-        #save_btn.clicked.connect(self.save)
-        #load_btn.clicked.connect(self.load)
+        save_btn.clicked.connect(self.save)
+        load_btn.clicked.connect(self.load)
 
         layout = QVBoxLayout()
         layout.addWidget(save_btn)
