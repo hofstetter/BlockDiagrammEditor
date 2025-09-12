@@ -2,7 +2,7 @@
 import json
 import math
 from PyQt5.QtGui import QPolygonF
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QFileDialog, QPushButton, QVBoxLayout
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QFileDialog, QPushButton, QVBoxLayout, QHBoxLayout
 from PyQt5.QtGui import QPainter, QPen, QColor
 from PyQt5.QtGui import QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRect, QPointF
@@ -63,51 +63,60 @@ class DrawingWidget(QWidget):
         self.line_start_rect = None 
         self.line_start_index = None
         self.mode = None
+        self.selected_item = None
 
 
-    
+    #Maus-Klick
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            # Prüfen auf Rechteck-Klick für Verschieben oder Linienstart
+            for rect,name in self.dobjects:
+                    self.selected_item = None  # zurücksetzen
+
+            # Mode prüfen
             if(self.mode == "move"):
                 #for rect,name in reversed(self.dobjects):
+                
+                    
                 for rect,name in self.dobjects:
-                    if rect.contains(event.pos()):
+                    self.selected_item = None  # zurücksetzen
+                    if rect.contains(event.pos()):  #Objekt getroffen
                         self.selected_rect = rect
                         self.offset = event.pos() - rect.topLeft()
+                        self.selected_item = rect
                         return
-            i=-1
-            #for ob,name in reversed(self.dobjects):
-            for ob,name in self.dobjects:
-                i=i+1 # Index für gefundenes Objekt
-                if ob.contains(event.pos()):
-                    if self.line_start_rect is None:
-                        # Erste Auswahl für Linie
-                        self.line_start_rect = ob
-                        self.line_start_index = i
-                        return
-                    else:
-                        # Zweite Auswahl -> Linie erstellen
-                        if ob != self.line_start_rect:
-                           self.connections.append(Dconnection(i2=i,i1=self.line_start_index,name="Verbindung"))
-                        self.line_start_rect = None
-                        self.line_start_index = None
-                        self.update()
-                        return
+            
+            if(self.mode == "drawline"):
 
-           
+                #Objekt getroffen?
+                #for ob,name in reversed(self.dobjects):
+                i=-1
+                for ob,name in self.dobjects:
+                    i=i+1 # Index für gefundenes Objekt
+                    if ob.contains(event.pos()): #Objekt getroffen
+                        if self.line_start_rect is None:
+                            # Erste Auswahl für Linie
+                            self.line_start_rect = ob
+                            self.line_start_index = i
+                            return
+                        else:
+                            # Zweite Auswahl -> Linie erstellen
+                            if ob != self.line_start_rect:
+                                self.connections.append(Dconnection(i2=i,i1=self.line_start_index,name="Verbindung"))
+                                self.line_start_rect = None
+                                self.line_start_index = None
+                                self.update()
+                                return
+
+            if(self.mode == "drawbox"):
+                # Rechteck erstellen
+                self.current_rect = QRect(event.pos(), event.pos())
+                obj=Dobject(self.current_rect,"Name")
+                self.dobjects.append(obj)
+                self.update()
             
-            # Vorsicht: Name interaktib abfragen  -> Verändert die Daten, current_rect erst nach der Namenseingabe erstellen, oder
-            #den Namen erst nach dem MouseRelease abfragen.
-            #text, ok = QInputDialog.getText(self, "Blockname", "Name für das Rechteck eingeben:")
-            
-            # Rechteck erstellen
-            self.current_rect = QRect(event.pos(), event.pos())
-            obj=Dobject(self.current_rect,"Name")
-            self.dobjects.append(obj)
-            self.update()
-            
+    # Maus Ziehen
     def mouseMoveEvent(self, event):
+        #im Falle von Move-Mode
         if(self.mode == "move"):
             if self.selected_rect is not None and self.offset is not None:
                 new_top_left = event.pos() - self.offset
@@ -135,9 +144,17 @@ class DrawingWidget(QWidget):
         painter.setPen(pen)
 
         # Rechtecke zeichnen
+       
         for dobj in self.dobjects:
+            pen = QPen(Qt.black, 2)
+            painter.setPen(pen)
             painter.drawRect(dobj.obj)
             painter.drawText(dobj.obj, Qt.AlignCenter, dobj.name)
+            
+            if self.selected_item is not None:
+                highlight_pen = QPen(QColor("red"), 3, Qt.DashLine)
+                painter.setPen(highlight_pen)
+                painter.drawRect(self.selected_item)
 
         # Verbindungen zeichnen
         line_pen = QPen(QColor(200, 0, 0), 2)
@@ -277,33 +294,45 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Rechtecke + Linien Rand-zu-Rand")
         self.setGeometry(200, 200, 800, 600)
+
         self.drawing_widget = DrawingWidget()
-        self.setCentralWidget(self.drawing_widget)
-        
+
+        # --- Buttons ---
         save_btn = QPushButton("Speichern")
         load_btn = QPushButton("Laden")
         drawbox_btn = QPushButton("DrawBox")
         drawline_btn = QPushButton("DrawLine")
         move_btn = QPushButton("Move")
-        
+
+        # --- Button-Events ---
         move_btn.clicked.connect(lambda: self.drawing_widget.set_mode("move"))
         drawbox_btn.clicked.connect(lambda: self.drawing_widget.set_mode("drawbox"))
         drawline_btn.clicked.connect(lambda: self.drawing_widget.set_mode("drawline"))
-        
         save_btn.clicked.connect(self.save)
         load_btn.clicked.connect(self.load)
 
-        layout = QVBoxLayout()
-        layout.addWidget(save_btn)
-        layout.addWidget(load_btn)
-        layout.addWidget(drawbox_btn)
-        layout.addWidget(drawline_btn)
-        layout.addWidget(move_btn)
-        layout.addWidget(self.drawing_widget)
+        # --- Layouts ---
+        button_layout = QVBoxLayout()
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(load_btn)
+        button_layout.addWidget(drawbox_btn)
+        button_layout.addWidget(drawline_btn)
+        button_layout.addWidget(move_btn)
+        button_layout.addStretch()  # schiebt Buttons nach oben
 
+        main_layout = QHBoxLayout()
+        main_layout.addLayout(button_layout)     # links Buttons
+        main_layout.addWidget(self.drawing_widget)  # rechts Zeichenbereich
+
+        # --- Container für QMainWindow ---
         container = QWidget()
-        container.setLayout(layout)
+        container.setLayout(main_layout)
         self.setCentralWidget(container)
+
+        # Optional: Buttons schmal machen
+        for btn in [save_btn, load_btn, drawbox_btn, drawline_btn, move_btn]:
+            btn.setFixedWidth(120)
+        
 
     def save(self):
         filename, _ = QFileDialog.getSaveFileName(self, "Datei speichern", "", "JSON Files (*.json)")
