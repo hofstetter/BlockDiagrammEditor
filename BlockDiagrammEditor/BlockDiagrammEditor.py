@@ -178,6 +178,23 @@ def slice_polyline(points, t0, t1):
         out.append(end)
     return out
 
+def polyline_distance(points, x, y):
+    best = None
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        if l2 < 1e-9:
+            dist = math.hypot(x - ax, y - ay)
+        else:
+            t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / l2))
+            px, py = ax + t * dx, ay + t * dy
+            dist = math.hypot(x - px, y - py)
+        if best is None or dist < best:
+            best = dist
+    return float("inf") if best is None else best
+
 def signed_offset_from_polyline(points, x, y):
     best = None
     for i in range(len(points) - 1):
@@ -206,6 +223,15 @@ def points_bbox(points):
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     return (min(xs), min(ys), max(xs), max(ys))
+
+def parse_name_offset(data):
+    v = data.get("name_offset") if isinstance(data, dict) else None
+    if isinstance(v, (list, tuple)) and len(v) >= 2:
+        try:
+            return (float(v[0]), float(v[1]))
+        except (TypeError, ValueError):
+            pass
+    return (0.0, 0.0)
 
 def next_numbered_name(names, prefix):
     max_n = 0
@@ -276,12 +302,14 @@ def sync_open_arrow(canvas, item_id, points, at_start, zoom, color, width, tags)
 # ---------------------------
 
 class RectObj:
-    def __init__(self, app, bbox, name=None, obj_id=None, dashed=False):
+    def __init__(self, app, bbox, name=None, obj_id=None, dashed=False, name_offset=None):
         self.app = app
         self.id = obj_id or str(uuid.uuid4())
         self.bbox = rect_normalize(bbox)  # (x1,y1,x2,y2)
         self.name = name if name is not None else app.next_object_name("B")
+        self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
         self.dashed = bool(dashed)
+        self.interfaces = []
         # canvas object ids
         self.canvas_rect = None
         self.canvas_text = None
@@ -293,37 +321,61 @@ class RectObj:
             "id": self.id,
             "bbox": list(self.bbox),
             "name": self.name,
+            "name_offset": [self.name_offset[0], self.name_offset[1]],
             "dashed": self.dashed,
+            "interfaces": [i.to_dict() for i in self.interfaces],
         }
 
     @classmethod
     def from_dict(cls, app, d):
-        return cls(app, tuple(d["bbox"]), name=d.get("name"), obj_id=d["id"], dashed=d.get("dashed", False))
+        rect = cls(
+            app, tuple(d["bbox"]), name=d.get("name"), obj_id=d["id"],
+            dashed=d.get("dashed", False), name_offset=parse_name_offset(d),
+        )
+        for idata in d.get("interfaces", []):
+            iface = InterfaceObj.from_dict(rect, idata)
+            rect.interfaces.append(iface)
+            app.ifaces[iface.id] = iface
+        return rect
 
     def _dash_style(self):
         return (8, 4) if self.dashed else ""
+
+    def name_anchor(self):
+        x1, y1, x2, y2 = self.bbox
+        return ((x1 + x2) / 2.0, y1 + 4)
+
+    def name_pos(self):
+        ax, ay = self.name_anchor()
+        return (ax + self.name_offset[0], ay + self.name_offset[1])
 
     def draw(self):
         c = self.app.canvas
         z = getattr(self.app, "zoom", 1.0)
         x1,y1,x2,y2 = self.bbox
         zx1, zy1, zx2, zy2 = x1 * z, y1 * z, x2 * z, y2 * z
+        nx, ny = self.name_pos()
         width = 3 if self.selected else 2
         if self.canvas_rect is None:
             self.canvas_rect = c.create_rectangle(
                 zx1, zy1, zx2, zy2, fill="", outline="#000000", width=width,
                 dash=self._dash_style(), tags=("block", self.id)
             )
-            self.canvas_text = c.create_text((zx1+zx2)/2, zy1+4, text=self.name, anchor="n", tags=("block_text", self.id))
+            self.canvas_text = c.create_text(
+                nx * z, ny * z, text=self.name, anchor="n", tags=("block_text", self.id)
+            )
         else:
             c.coords(self.canvas_rect, zx1, zy1, zx2, zy2)
-            c.coords(self.canvas_text, (zx1+zx2)/2, zy1+4)
+            c.coords(self.canvas_text, nx * z, ny * z)
             c.itemconfig(self.canvas_text, text=self.name)
             c.itemconfig(self.canvas_rect, fill="", outline="#000000", width=width, dash=self._dash_style())
+        c.tag_raise(self.canvas_text)
         if self.selected:
             self._ensure_handles()
         else:
             self._remove_handles()
+        for iface in self.interfaces:
+            iface.draw()
 
     def _ensure_handles(self):
         c = self.app.canvas
@@ -363,6 +415,8 @@ class RectObj:
                     pass
         self.canvas_rect = None
         self.canvas_text = None
+        for iface in self.interfaces:
+            iface.destroy_canvas()
 
     def set_selected(self, sel: bool):
         self.selected = sel
@@ -399,20 +453,227 @@ class RectObj:
         
         self.bbox = rect_normalize((x1,y1,x2,y2))   
         self.draw()
-        
-        
+
+    def add_interface(self, side=None, t=None):
+        if side is None or t is None:
+            side, t = next_iface_slot(self.interfaces)
+        iface = InterfaceObj(self, side=side, t=t)
+        self.interfaces.append(iface)
+        self.app.ifaces[iface.id] = iface
+        return iface
+
+    def remove_interface(self, iface_id):
+        iface = next((i for i in self.interfaces if i.id == iface_id), None)
+        if not iface:
+            return
+        iface.destroy_canvas()
+        self.interfaces = [i for i in self.interfaces if i.id != iface_id]
+        self.app.ifaces.pop(iface_id, None)
+
+
+def next_iface_slot(ifaces):
+    used = {(i.side, round(i.t, 2)) for i in ifaces}
+    for t in (0.5, 0.28, 0.72, 0.16, 0.84, 0.4, 0.6):
+        key = ("e", round(t, 2))
+        if key not in used:
+            return "e", t
+    return "e", min(0.9, 0.12 + 0.12 * len(ifaces))
+
+
+class InterfaceObj:
+    """Lollipop-Interface an der Kante eines Blocks."""
+
+    RADIUS = 8
+    STEM = 16
+    SIDES = ("e", "w", "n", "s")
+    SIDE_LABELS = {"e": "rechts", "w": "links", "n": "oben", "s": "unten"}
+    LABEL_SIDES = {v: k for k, v in SIDE_LABELS.items()}
+
+    def __init__(self, block, side="e", t=0.5, name=None, obj_id=None, name_offset=None):
+        self.block = block
+        self.id = obj_id or str(uuid.uuid4())
+        self.side = side if side in self.SIDES else "e"
+        self.t = min(0.92, max(0.08, float(t)))
+        self.name = name if name is not None else block.app.next_object_name("I")
+        self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
+        self.selected = False
+        self.canvas_stem = None
+        self.canvas_circle = None
+        self.canvas_text = None
+
+    @property
+    def block_id(self):
+        return self.block.id
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "name_offset": [self.name_offset[0], self.name_offset[1]],
+            "side": self.side,
+            "t": self.t,
+        }
+
+    @classmethod
+    def from_dict(cls, block, d):
+        return cls(
+            block,
+            side=d.get("side", "e"),
+            t=d.get("t", 0.5),
+            name=d.get("name"),
+            obj_id=d.get("id"),
+            name_offset=parse_name_offset(d),
+        )
+
+    def attach_point(self):
+        x1, y1, x2, y2 = self.block.bbox
+        t = self.t
+        if self.side == "e":
+            return (x2, y1 + t * (y2 - y1))
+        if self.side == "w":
+            return (x1, y1 + t * (y2 - y1))
+        if self.side == "n":
+            return (x1 + t * (x2 - x1), y1)
+        return (x1 + t * (x2 - x1), y2)
+
+    def outward(self):
+        return {"e": (1, 0), "w": (-1, 0), "n": (0, -1), "s": (0, 1)}[self.side]
+
+    def circle_center(self):
+        ax, ay = self.attach_point()
+        ox, oy = self.outward()
+        dist = self.STEM + self.RADIUS
+        return (ax + ox * dist, ay + oy * dist)
+
+    def stem_end(self):
+        ax, ay = self.attach_point()
+        ox, oy = self.outward()
+        return (ax + ox * self.STEM, ay + oy * self.STEM)
+
+    def rim_point_from(self, p):
+        cx, cy = self.circle_center()
+        dx, dy = cx - p[0], cy - p[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            ox, oy = self.outward()
+            return (cx - ox * self.RADIUS, cy - oy * self.RADIUS)
+        ux, uy = dx / length, dy / length
+        return (cx - ux * self.RADIUS, cy - uy * self.RADIUS)
+
+    def bbox(self):
+        cx, cy = self.circle_center()
+        ax, ay = self.attach_point()
+        r = self.RADIUS
+        xs = [cx - r, cx + r, ax]
+        ys = [cy - r, cy + r, ay]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def contains_point(self, x, y):
+        cx, cy = self.circle_center()
+        if math.hypot(x - cx, y - cy) <= self.RADIUS + 5:
+            return True
+        ax, ay = self.attach_point()
+        sx, sy = self.stem_end()
+        return _point_near_segment(x, y, ax, ay, sx, sy, 5)
+
+    def place_at(self, x, y):
+        x1, y1, x2, y2 = self.block.bbox
+        candidates = [
+            ("n", abs(y - y1), 0 if x2 <= x1 else (x - x1) / (x2 - x1)),
+            ("s", abs(y - y2), 0 if x2 <= x1 else (x - x1) / (x2 - x1)),
+            ("w", abs(x - x1), 0 if y2 <= y1 else (y - y1) / (y2 - y1)),
+            ("e", abs(x - x2), 0 if y2 <= y1 else (y - y1) / (y2 - y1)),
+        ]
+        side, _, t = min(candidates, key=lambda it: it[1])
+        self.side = side
+        self.t = min(0.92, max(0.08, t))
+
+    def name_anchor(self):
+        cx, cy = self.circle_center()
+        r = self.RADIUS
+        ox, oy = self.outward()
+        tx = cx + ox * (r + 10)
+        ty = cy + oy * (r + 10)
+        if self.side in ("e", "w"):
+            ty = cy
+        else:
+            tx = cx
+        return (tx, ty)
+
+    def name_pos(self):
+        ax, ay = self.name_anchor()
+        return (ax + self.name_offset[0], ay + self.name_offset[1])
+
+    def draw(self):
+        c = self.block.app.canvas
+        z = getattr(self.block.app, "zoom", 1.0)
+        ax, ay = self.attach_point()
+        sx, sy = self.stem_end()
+        cx, cy = self.circle_center()
+        r = self.RADIUS
+        color = "#0077ff" if self.selected else "#000000"
+        width = 3 if self.selected else 2
+        tags = ("iface", self.id)
+        if self.canvas_stem is None:
+            self.canvas_stem = c.create_line(
+                ax * z, ay * z, sx * z, sy * z, width=width, fill=color, tags=tags
+            )
+            self.canvas_circle = c.create_oval(
+                (cx - r) * z, (cy - r) * z, (cx + r) * z, (cy + r) * z,
+                outline=color, width=width, fill="", tags=tags
+            )
+            nx, ny = self.name_pos()
+            self.canvas_text = c.create_text(
+                nx * z, ny * z, text=self.name, fill=color,
+                tags=("iface_text", self.id)
+            )
+        else:
+            c.coords(self.canvas_stem, ax * z, ay * z, sx * z, sy * z)
+            c.coords(self.canvas_circle, (cx - r) * z, (cy - r) * z, (cx + r) * z, (cy + r) * z)
+            c.itemconfig(self.canvas_stem, fill=color, width=width)
+            c.itemconfig(self.canvas_circle, outline=color, width=width)
+            c.itemconfig(self.canvas_text, text=self.name, fill=color)
+        nx, ny = self.name_pos()
+        c.coords(self.canvas_text, nx * z, ny * z)
+        c.tag_raise(self.canvas_stem)
+        c.tag_raise(self.canvas_circle)
+        c.tag_raise(self.canvas_text)
+
+    def destroy_canvas(self):
+        c = self.block.app.canvas
+        for item in (self.canvas_stem, self.canvas_circle, self.canvas_text):
+            if item:
+                try:
+                    c.delete(item)
+                except Exception:
+                    pass
+        self.canvas_stem = None
+        self.canvas_circle = None
+        self.canvas_text = None
+
+
+def _point_near_segment(x, y, x1, y1, x2, y2, dist):
+    dx, dy = x2 - x1, y2 - y1
+    length2 = dx * dx + dy * dy
+    if length2 < 1e-9:
+        return math.hypot(x - x1, y - y1) <= dist
+    t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length2))
+    px, py = x1 + t * dx, y1 + t * dy
+    return math.hypot(x - px, y - py) <= dist
+
 
 class ParallelArrow:
     """Kurzer Datenfluss parallel zur Stammlinie, in deren Mitte."""
 
     LENGTH_RATIO = 0.38
 
-    def __init__(self, line, offset=16, name=None, obj_id=None, length_ratio=None, arrow_at_start=False):
+    def __init__(self, line, offset=16, name=None, obj_id=None, length_ratio=None, arrow_at_start=False, name_offset=None):
         self.line = line
         self.id = obj_id or str(uuid.uuid4())
         self.offset = offset
         self.length_ratio = length_ratio if length_ratio is not None else self.LENGTH_RATIO
         self.name = name if name is not None else line.app.next_object_name("D")
+        self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
         self.arrow_at_start = bool(arrow_at_start)
         self.canvas_line = None
         self.canvas_arrow = None
@@ -425,6 +686,7 @@ class ParallelArrow:
             "offset": self.offset,
             "length_ratio": self.length_ratio,
             "name": self.name,
+            "name_offset": [self.name_offset[0], self.name_offset[1]],
             "arrow_at_start": self.arrow_at_start,
         }
 
@@ -437,6 +699,7 @@ class ParallelArrow:
             obj_id=d.get("id"),
             length_ratio=d.get("length_ratio"),
             arrow_at_start=d.get("arrow_at_start", False),
+            name_offset=parse_name_offset(d),
         )
 
     def geometry(self):
@@ -451,6 +714,18 @@ class ParallelArrow:
         if len(mid) < 2:
             return None
         return mid
+
+    def name_anchor(self):
+        pts = self.geometry()
+        if not pts:
+            return (0.0, 0.0)
+        mx = sum(p[0] for p in pts) / len(pts)
+        my = min(p[1] for p in pts) - 10
+        return (mx, my)
+
+    def name_pos(self):
+        ax, ay = self.name_anchor()
+        return (ax + self.name_offset[0], ay + self.name_offset[1])
 
     def draw(self):
         c = self.line.app.canvas
@@ -467,10 +742,9 @@ class ParallelArrow:
                 *flat, width=width, joinstyle=tk.MITER,
                 fill=color, tags=tags
             )
-            mx = sum(p[0] for p in pts) / len(pts) * z
-            my = sum(p[1] for p in pts) / len(pts) * z
+            nx, ny = self.name_pos()
             self.canvas_text = c.create_text(
-                mx, my - 10, text=self.name, fill=color,
+                nx * z, ny * z, text=self.name, fill=color,
                 tags=("parrow_text", self.line.id, self.id)
             )
         else:
@@ -480,9 +754,8 @@ class ParallelArrow:
         self.canvas_arrow = sync_open_arrow(
             c, self.canvas_arrow, pts, self.arrow_at_start, z, color, width, tags
         )
-        mx = sum(p[0] for p in pts) / len(pts) * z
-        my = min(p[1] for p in pts) * z - 10
-        c.coords(self.canvas_text, mx, my)
+        nx, ny = self.name_pos()
+        c.coords(self.canvas_text, nx * z, ny * z)
         c.tag_raise(self.canvas_line)
         if self.canvas_arrow:
             c.tag_raise(self.canvas_arrow)
@@ -502,12 +775,14 @@ class ParallelArrow:
 
 
 class LineObj:
-    def __init__(self, app, source_rect_id, target_rect_id, name=None, obj_id=None, waypoint=None, arrow_at_start=False):
+    def __init__(self, app, source_rect_id, target_rect_id, name=None, obj_id=None, waypoint=None, arrow_at_start=False, target_kind="block", name_offset=None):
         self.app = app
         self.id = obj_id or str(uuid.uuid4())
         self.source = source_rect_id
         self.target = target_rect_id
+        self.target_kind = target_kind if target_kind in ("block", "iface") else "block"
         self.name = name if name is not None else app.next_object_name("V")
+        self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
         self.line_offset = 0
         self.waypoint = tuple(waypoint) if waypoint else None
         self.arrow_at_start = bool(arrow_at_start)
@@ -524,7 +799,9 @@ class LineObj:
             "id": self.id,
             "source": self.source,
             "target": self.target,
+            "target_kind": self.target_kind,
             "name": self.name,
+            "name_offset": [self.name_offset[0], self.name_offset[1]],
             "arrow_at_start": self.arrow_at_start,
             "parallel_arrows": [a.to_dict() for a in self.parallel_arrows]
         }
@@ -538,6 +815,8 @@ class LineObj:
         line = cls(
             app, d["source"], d["target"], name=d.get("name"), obj_id=d["id"],
             waypoint=wp, arrow_at_start=d.get("arrow_at_start", False),
+            target_kind=d.get("target_kind", "block"),
+            name_offset=parse_name_offset(d),
         )
         for ad in d.get("parallel_arrows", []):
             line.parallel_arrows.append(ParallelArrow.from_dict(line, ad))
@@ -562,12 +841,31 @@ class LineObj:
         pa.destroy_canvas()
         self.parallel_arrows = [a for a in self.parallel_arrows if a.id != arrow_id]
 
+    def target_anchor(self):
+        if self.target_kind == "iface":
+            return self.app.ifaces.get(self.target)
+        return self.app.rects.get(self.target)
+
     def polyline_points(self):
         src = self.app.rects.get(self.source)
-        tgt = self.app.rects.get(self.target)
-        if not src or not tgt:
+        if not src:
             return None
         a_center = rect_center_coords(src.bbox)
+        if self.target_kind == "iface":
+            iface = self.app.ifaces.get(self.target)
+            if not iface:
+                return None
+            b_center = iface.circle_center()
+            if self.waypoint:
+                a_point = line_rect_intersection(src.bbox, a_center, self.waypoint)
+                b_point = iface.rim_point_from(self.waypoint)
+                return (a_point, self.waypoint, b_point)
+            a_point = line_rect_intersection(src.bbox, a_center, b_center)
+            b_point = iface.rim_point_from(a_point)
+            return (a_point, b_point)
+        tgt = self.app.rects.get(self.target)
+        if not tgt:
+            return None
         b_center = rect_center_coords(tgt.bbox)
         if self.waypoint:
             a_point = line_rect_intersection(src.bbox, a_center, self.waypoint)
@@ -585,6 +883,21 @@ class LineObj:
             b_point = (b_point[0] + self.line_offset, b_point[1] + self.line_offset)
         return (a_point, b_point)
 
+    def name_anchor(self):
+        if self.waypoint:
+            return (self.waypoint[0], self.waypoint[1] - 12)
+        points = self.polyline_points()
+        if not points:
+            return (0.0, 0.0)
+        return (
+            (points[0][0] + points[-1][0]) / 2.0,
+            (points[0][1] + points[-1][1]) / 2.0 - 10,
+        )
+
+    def name_pos(self):
+        ax, ay = self.name_anchor()
+        return (ax + self.name_offset[0], ay + self.name_offset[1])
+
     def draw(self):
         c = self.app.canvas
         z = getattr(self.app, "zoom", 1.0)
@@ -599,25 +912,22 @@ class LineObj:
             self.canvas_line = c.create_line(
                 *flat, width=width, joinstyle=tk.MITER, fill=color, tags=tags
             )
-            mx = sum(p[0] for p in points) / len(points) * z
-            my = sum(p[1] for p in points) / len(points) * z
-            self.canvas_text = c.create_text(mx, my - 10, text=self.name, tags=("verbindung_text", self.id))
+            nx, ny = self.name_pos()
+            self.canvas_text = c.create_text(nx * z, ny * z, text=self.name, tags=("verbindung_text", self.id))
         else:
             c.coords(self.canvas_line, *flat)
             c.itemconfig(self.canvas_text, text=self.name)
         self.canvas_arrow = sync_open_arrow(
             c, self.canvas_arrow, points, self.arrow_at_start, z, color, width, tags
         )
-        if self.waypoint:
-            mx, my = self.waypoint[0] * z, self.waypoint[1] * z - 12
-        else:
-            mx = (points[0][0] + points[-1][0]) / 2.0 * z
-            my = (points[0][1] + points[-1][1]) / 2.0 * z - 10
-        c.coords(self.canvas_text, mx, my)
+        nx, ny = self.name_pos()
+        c.coords(self.canvas_text, nx * z, ny * z)
         c.itemconfig(self.canvas_line, fill=color, width=width)
         c.itemconfig(self.canvas_text, fill=color)
+        c.tag_raise(self.canvas_line)
         if self.canvas_arrow:
             c.tag_raise(self.canvas_arrow)
+        c.tag_raise(self.canvas_text)
         if self.selected and self.waypoint:
             self._ensure_handle()
         else:
@@ -680,6 +990,7 @@ class DiagramApp:
         # Datenmodelle
         self.rects = {}  # id -> RectObj
         self.lines = {}  # id -> LineObj
+        self.ifaces = {}  # id -> InterfaceObj
 
         # Zustand
         self.mode = "select"  # modes: select, draw_block, draw_verbindung
@@ -690,13 +1001,17 @@ class DiagramApp:
         self.line_preview_id = None  # canvas id of rubber-band line
         self.line_preview_arrow_id = None
         self.selected_obj = None  # primary if exactly one; else None
-        self.selection = []  # list of ("block", id) / ("verbindung", id) / ("parrow", lid, aid)
+        self.selection = []  # ("block", id) / ("verbindung", id) / ("parrow", ...) / ("iface", id)
+        self.iface_btn = None
+        self.drag_iface_id = None
         self.dragging = False
         self.drag_start = (0,0)
         self.drag_rect_id = None
         self.drag_handles_corner = None  # if resizing: which corner
         self.drag_line_id = None  # line whose waypoint is being dragged
         self.drag_parrow = None  # (line_id, arrow_id) while adjusting offset
+        self.drag_name_key = None
+        self.drag_name_grab = (0.0, 0.0)
         self.move_group_ids = set()  # rectangles that follow when moving a rect
         self.marquee_id = None
         self.marquee_start = (0, 0)
@@ -707,14 +1022,21 @@ class DiagramApp:
 
         self._syncing_attrs = False
         self.parallel_arrow_btn = None
+        self._history = []
+        self._history_index = -1
+        self._history_restoring = False
+        self._history_limit = 50
         self._build_ui()
         self._bind_events()
+        self._push_history()
 
     def next_object_name(self, prefix):
         if prefix == "B":
             names = [r.name for r in self.rects.values()]
         elif prefix == "V":
             names = [l.name for l in self.lines.values()]
+        elif prefix == "I":
+            names = [i.name for r in self.rects.values() for i in r.interfaces]
         else:
             names = [pa.name for l in self.lines.values() for pa in l.parallel_arrows]
         return next_numbered_name(names, prefix)
@@ -733,22 +1055,39 @@ class DiagramApp:
         self.right_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Left toolbar
-        ttk.Label(self.left_frame, text="Werkzeuge", font=("Arial", 12, "bold")).pack(pady=6)
+        ttk.Label(self.left_frame, text="Menü", font=("Arial", 12, "bold")).pack(pady=6)
         self.btn_draw_rect = ttk.Button(self.left_frame, text="Block zeichnen", command=lambda: self.toggle_mode("draw_block"))
         self.btn_draw_line = ttk.Button(self.left_frame, text="Verbindung erstellen", command=lambda: self.toggle_mode("draw_verbindung"))
         self.btn_delete = ttk.Button(self.left_frame, text="Löschen", command=self.delete_selected)
         self.btn_save = ttk.Button(self.left_frame, text="Speichern (JSON)", command=self.save_json)
         self.btn_load = ttk.Button(self.left_frame, text="Laden (JSON)", command=self.load_json)
         self.btn_copy_image = ttk.Button(self.left_frame, text="Als Bild kopieren", command=self.copy_canvas_to_clipboard)
-        self.btn_zoom_in = ttk.Button(self.left_frame, text="Zoom +", command=lambda: self._zoom_by(1.2))
-        self.btn_zoom_out = ttk.Button(self.left_frame, text="Zoom −", command=lambda: self._zoom_by(1 / 1.2))
-        self.btn_zoom_fit = ttk.Button(self.left_frame, text="Zoom anpassen", command=self.zoom_fit)
-        self.btn_zoom_100 = ttk.Button(self.left_frame, text="Zoom 100 %", command=lambda: self._set_zoom(1.0))
-        self.zoom_label = ttk.Label(self.left_frame, text="Zoom: 100 %")
-        self.btn_toggle_sidebar = ttk.Button(self.left_frame, text="Seitenleiste toggle", command=self.toggle_sidebar)
 
-        for w in (self.btn_draw_rect, self.btn_draw_line, self.btn_delete, self.btn_copy_image, self.btn_save, self.btn_load, self.btn_zoom_in, self.btn_zoom_out, self.btn_zoom_fit, self.btn_zoom_100, self.zoom_label, self.btn_toggle_sidebar):
+        for w in (self.btn_draw_rect, self.btn_draw_line, self.btn_delete, self.btn_copy_image, self.btn_save, self.btn_load):
             w.pack(fill=tk.X, padx=8, pady=4)
+
+        undo_row = ttk.Frame(self.left_frame)
+        undo_row.pack(fill=tk.X, padx=8, pady=4)
+        undo_row.columnconfigure(0, weight=1, uniform="hist")
+        undo_row.columnconfigure(1, weight=1, uniform="hist")
+        self.btn_undo = ttk.Button(undo_row, text="Undo", command=self.undo)
+        self.btn_redo = ttk.Button(undo_row, text="Redo", command=self.redo)
+        self.btn_undo.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self.btn_redo.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
+        zoom_row = ttk.Frame(self.left_frame)
+        zoom_row.pack(fill=tk.X, padx=8, pady=4)
+        zoom_row.columnconfigure(0, weight=2, uniform="zoom")
+        zoom_row.columnconfigure(1, weight=2, uniform="zoom")
+        zoom_row.columnconfigure(2, weight=3, uniform="zoom")
+        zoom_row.columnconfigure(3, weight=8)
+        self.btn_zoom_in = ttk.Button(zoom_row, text="+", width=2, command=lambda: self._zoom_by(1.2))
+        self.btn_zoom_out = ttk.Button(zoom_row, text="−", width=2, command=lambda: self._zoom_by(1 / 1.2))
+        self.btn_zoom_100 = ttk.Button(zoom_row, text="100%", width=4, command=lambda: self._set_zoom(1.0))
+        self.btn_zoom_in.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self.btn_zoom_out.grid(row=0, column=1, sticky="ew", padx=1)
+        self.btn_zoom_100.grid(row=0, column=2, sticky="ew", padx=(2, 0))
+        ttk.Frame(zoom_row).grid(row=0, column=3, sticky="ew")
 
         # Canvas with scrollbars
         self.canvas_frame.grid_rowconfigure(0, weight=1)
@@ -764,45 +1103,67 @@ class DiagramApp:
 
         # Right attribute panel (initially visible)
         self.attr_visible = True
-        ttk.Label(self.right_frame, text="Attribute", font=("Arial", 12, "bold")).pack(pady=6)
+        attr_header = ttk.Frame(self.right_frame)
+        attr_header.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(attr_header, text="Attribute", font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        self.btn_hide_attr = ttk.Button(attr_header, text="»", width=2, command=self.toggle_sidebar)
+        self.btn_hide_attr.pack(side=tk.RIGHT)
+        self.attr_restore = ttk.Frame(self.root, width=28)
+        self.btn_show_attr = ttk.Button(self.attr_restore, text="«", width=2, command=self.toggle_sidebar)
+        self.btn_show_attr.pack(side=tk.TOP, padx=2, pady=6)
         self.attr_container = ttk.Frame(self.right_frame)
         self.attr_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-        ttk.Label(self.attr_container, text="Name:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.attr_container, text="Typ:").grid(row=0, column=0, sticky="w")
+        self.attr_type_var = tk.StringVar(value="")
+        self.attr_type_label = ttk.Label(self.attr_container, textvariable=self.attr_type_var)
+        self.attr_type_label.grid(row=0, column=1, sticky="w")
+
+        ttk.Label(self.attr_container, text="Name:").grid(row=1, column=0, sticky="w")
         self.attr_name_var = tk.StringVar()
         self.attr_name_entry = ttk.Entry(self.attr_container, textvariable=self.attr_name_var)
-        self.attr_name_entry.grid(row=0, column=1, sticky="ew")
+        self.attr_name_entry.grid(row=1, column=1, sticky="ew")
         self.attr_name_entry.bind("<Return>", lambda e: self._on_name_changed() or "break")
         self.attr_name_entry.bind("<FocusOut>", lambda e: self._on_name_changed())
 
         self.attr_edge_label = ttk.Label(self.attr_container, text="Kante:")
-        self.attr_edge_label.grid(row=1, column=0, sticky="w")
+        self.attr_edge_label.grid(row=2, column=0, sticky="w")
         self.attr_edge_var = tk.StringVar(value="ausgezogen")
         self.attr_edge_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_edge_var,
             values=("ausgezogen", "gestrichelt"), state="readonly", width=12
         )
-        self.attr_edge_combo.grid(row=1, column=1, sticky="ew")
+        self.attr_edge_combo.grid(row=2, column=1, sticky="ew")
         self.attr_edge_combo.bind("<<ComboboxSelected>>", lambda e: self._on_edge_changed())
 
-        ttk.Label(self.attr_container, text="Abstand:").grid(row=2, column=0, sticky="w")
+        self.attr_side_label = ttk.Label(self.attr_container, text="Seite:")
+        self.attr_side_label.grid(row=3, column=0, sticky="w")
+        self.attr_side_var = tk.StringVar(value="rechts")
+        self.attr_side_combo = ttk.Combobox(
+            self.attr_container, textvariable=self.attr_side_var,
+            values=("rechts", "links", "oben", "unten"), state="readonly", width=12
+        )
+        self.attr_side_combo.grid(row=3, column=1, sticky="ew")
+        self.attr_side_combo.bind("<<ComboboxSelected>>", lambda e: self._on_side_changed())
+
+        ttk.Label(self.attr_container, text="Abstand:").grid(row=4, column=0, sticky="w")
         self.attr_offset_var = tk.StringVar()
         self.attr_offset_spin = ttk.Spinbox(
             self.attr_container, from_=-200, to=200, increment=2,
             textvariable=self.attr_offset_var, command=self._on_offset_changed
         )
-        self.attr_offset_spin.grid(row=2, column=1, sticky="ew")
+        self.attr_offset_spin.grid(row=4, column=1, sticky="ew")
         self.attr_offset_spin.bind("<Return>", lambda e: self._on_offset_changed())
         self.attr_offset_spin.bind("<FocusOut>", lambda e: self._on_offset_changed())
 
         self.attr_arrow_label = ttk.Label(self.attr_container, text="Pfeilspitze:")
-        self.attr_arrow_label.grid(row=3, column=0, sticky="w")
+        self.attr_arrow_label.grid(row=5, column=0, sticky="w")
         self.attr_arrow_var = tk.StringVar(value="Ende")
         self.attr_arrow_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_arrow_var,
             values=("Ende", "Anfang"), state="readonly", width=12
         )
-        self.attr_arrow_combo.grid(row=3, column=1, sticky="ew")
+        self.attr_arrow_combo.grid(row=5, column=1, sticky="ew")
         self.attr_arrow_combo.bind("<<ComboboxSelected>>", lambda e: self._on_arrow_changed())
 
         for i in range(2):
@@ -816,12 +1177,12 @@ class DiagramApp:
         self.attr_arrow_combo.grid_remove()
         self.attr_edge_label.grid_remove()
         self.attr_edge_combo.grid_remove()
+        self.attr_side_combo.state(["disabled"])
+        self.attr_side_label.grid_remove()
+        self.attr_side_combo.grid_remove()
 
         # Set initial mode look
         self.update_mode_buttons()
-
-        #Bindings aktivieren
-        self._bind_events()
 
     # ---------------------------
     # Eventbindung
@@ -844,6 +1205,89 @@ class DiagramApp:
         self.root.bind("<Control-0>", lambda e: self._set_zoom(1.0) or "break")
         self.root.bind("<Control-KP_Add>", lambda e: self._zoom_by(1.2) or "break")
         self.root.bind("<Control-KP_Subtract>", lambda e: self._zoom_by(1 / 1.2) or "break")
+        self.root.bind("<Control-z>", self.undo)
+        self.root.bind("<Control-Z>", self.undo)
+        self.root.bind("<Control-y>", self.redo)
+        self.root.bind("<Control-Y>", self.redo)
+        self.root.bind("<Control-Shift-Z>", self.redo)
+        self.root.bind("<Control-Shift-z>", self.redo)
+
+    def _diagram_data(self):
+        return {
+            "blocks": [r.to_dict() for r in self.rects.values()],
+            "verbindungen": [l.to_dict() for l in self.lines.values()],
+        }
+
+    def _apply_diagram_data(self, data):
+        self._clear_all()
+        for rd in data.get("blocks", data.get("rects", [])):
+            r = RectObj.from_dict(self, rd)
+            self.rects[r.id] = r
+            r.draw()
+        for ld in data.get("verbindungen", data.get("lines", [])):
+            kind = ld.get("target_kind", "block")
+            if ld.get("source") not in self.rects:
+                continue
+            if kind == "iface" and ld.get("target") not in self.ifaces:
+                continue
+            if kind != "iface" and ld.get("target") not in self.rects:
+                continue
+            l = LineObj.from_dict(self, ld)
+            self.lines[l.id] = l
+            l.draw()
+        self._update_scrollregion()
+
+    def _push_history(self):
+        if self._history_restoring:
+            return
+        encoded = json.dumps(self._diagram_data(), sort_keys=True, ensure_ascii=False)
+        if 0 <= self._history_index < len(self._history) and self._history[self._history_index] == encoded:
+            return
+        self._history = self._history[: self._history_index + 1]
+        self._history.append(encoded)
+        if len(self._history) > self._history_limit:
+            overflow = len(self._history) - self._history_limit
+            self._history = self._history[overflow:]
+            self._history_index = len(self._history) - 1
+        else:
+            self._history_index += 1
+
+    def _reset_history(self):
+        self._history = []
+        self._history_index = -1
+        self._push_history()
+
+    def _focus_in_attr_field(self):
+        w = self.root.focus_get()
+        if w is None:
+            return False
+        return w.winfo_class() in ("Entry", "TEntry", "TCombobox", "TSpinbox", "Spinbox")
+
+    def undo(self, event=None):
+        if self._focus_in_attr_field():
+            return
+        if self._history_index <= 0:
+            return "break"
+        self._history_index -= 1
+        self._history_restoring = True
+        try:
+            self._apply_diagram_data(json.loads(self._history[self._history_index]))
+        finally:
+            self._history_restoring = False
+        return "break"
+
+    def redo(self, event=None):
+        if self._focus_in_attr_field():
+            return
+        if self._history_index >= len(self._history) - 1:
+            return "break"
+        self._history_index += 1
+        self._history_restoring = True
+        try:
+            self._apply_diagram_data(json.loads(self._history[self._history_index]))
+        finally:
+            self._history_restoring = False
+        return "break"
 
     # ---------------------------
     # Mode Management
@@ -891,7 +1335,6 @@ class DiagramApp:
         if self.current_draw_rect:
             self.current_draw_rect.draw()
         self._update_scrollregion()
-        self.zoom_label.config(text=f"Zoom: {int(round(self.zoom * 100))} %")
 
     def _set_zoom(self, zoom, screen_x=None, screen_y=None):
         zoom = max(self.zoom_min, min(self.zoom_max, zoom))
@@ -919,6 +1362,8 @@ class DiagramApp:
 
     def zoom_fit(self):
         boxes = [r.bbox for r in self.rects.values()]
+        for iface in self.ifaces.values():
+            boxes.append(iface.bbox())
         for l in self.lines.values():
             pts = l.polyline_points()
             if pts:
@@ -991,7 +1436,13 @@ class DiagramApp:
 
     def _begin_select_hit(self, tag_info, x, y, include_rects=True):
         """Wählt ein vorhandenes Objekt unter der Maus und startet ggf. das Ziehen."""
-        if tag_info and ("parrow" in tag_info or "parrow_text" in tag_info):
+        name_key = self._name_key_from_tags(tag_info)
+        if not name_key:
+            name_key = self.name_at(x, y)
+        if name_key:
+            return self._start_name_drag(name_key, x, y)
+
+        if tag_info and "parrow" in tag_info and "parrow_text" not in tag_info:
             tags = [t for t in tag_info if t not in ("current", "parrow", "parrow_text")]
             if len(tags) >= 2:
                 lid, aid = tags[0], tags[1]
@@ -1014,6 +1465,16 @@ class DiagramApp:
                 self.drag_line_id = lid
                 return True
 
+        if tag_info and "iface" in tag_info and "iface_text" not in tag_info:
+            iid = next((t for t in tag_info if t in self.ifaces), None)
+            if iid:
+                key = ("iface", iid)
+                if key not in self.selection:
+                    self.select_object(key)
+                self.dragging = True
+                self.drag_iface_id = iid
+                return True
+
         if tag_info and "handle" in tag_info and "line_handle" not in tag_info:
             relevant_tags = [
                 t for t in tag_info
@@ -1031,27 +1492,51 @@ class DiagramApp:
                     print("Fehler beim Handle-Resizing:", e)
 
         if include_rects:
+            iid = self.iface_at(x, y)
+            if iid:
+                key = ("iface", iid)
+                if key not in self.selection:
+                    self.select_object(key)
+                self.dragging = True
+                self.drag_iface_id = iid
+                return True
+
+        hit_parrow = self.parrow_at(x, y)
+        if hit_parrow:
+            lid, aid = hit_parrow
+            key = ("parrow", lid, aid)
+            if key not in self.selection:
+                self.select_object(key)
+            if len(self.selection) > 1:
+                self.start_selection_drag(x, y)
+            else:
+                self.dragging = True
+                self.drag_parrow = (lid, aid)
+            return True
+
+        lid = self.verbindung_at(x, y)
+        if not lid and tag_info and "verbindung" in tag_info and "verbindung_text" not in tag_info:
+            lid = next((t for t in tag_info if t in self.lines), None)
+        if lid:
+            key = ("verbindung", lid)
+            if key not in self.selection:
+                self.select_object(key)
+                self.dragging = True
+                self.drag_line_id = lid
+            elif len(self.selection) > 1:
+                self.start_selection_drag(x, y)
+            else:
+                self.dragging = True
+                self.drag_line_id = lid
+            return True
+
+        if include_rects:
             rid = self.rect_at(x, y)
             if rid:
                 key = ("block", rid)
                 if key not in self.selection:
                     self.select_object(key)
                 self.start_dragging_rect(rid, x, y)
-                return True
-
-        if tag_info and ("verbindung" in tag_info or "verbindung_text" in tag_info):
-            lid = next((t for t in tag_info if t in self.lines), None)
-            if lid:
-                key = ("verbindung", lid)
-                if key not in self.selection:
-                    self.select_object(key)
-                    self.dragging = True
-                    self.drag_line_id = lid
-                elif len(self.selection) > 1:
-                    self.start_selection_drag(x, y)
-                else:
-                    self.dragging = True
-                    self.drag_line_id = lid
                 return True
         return False
 
@@ -1067,6 +1552,20 @@ class DiagramApp:
             # update temporary rectangle
             self.current_draw_rect.bbox = rect_normalize((self.drag_start[0], self.drag_start[1], x, y))
             self.current_draw_rect.draw()
+        elif self.dragging and self.drag_name_key:
+            obj = self._labeled_object(self.drag_name_key)
+            if obj:
+                gx, gy = self.drag_name_grab
+                ax, ay = obj.name_anchor()
+                obj.name_offset = (x - gx - ax, y - gy - ay)
+                self._redraw_labeled(self.drag_name_key)
+        elif self.dragging and self.drag_iface_id:
+            iface = self.ifaces.get(self.drag_iface_id)
+            if iface:
+                iface.place_at(x, y)
+                iface.draw()
+                self.update_all_lines_for(iface.block_id)
+                self._set_side_field(iface.side, visible=True)
         elif self.line_drag_source:
             self._update_line_preview(x, y)
         elif self.dragging and self.drag_parrow:
@@ -1132,6 +1631,7 @@ class DiagramApp:
                 rect.draw()
                 self.set_mode("select")
                 self.select_object(("block", rect.id))
+                self._push_history()
             else:
                 self.current_draw_rect.destroy_canvas()
                 self.set_mode("select")
@@ -1144,8 +1644,11 @@ class DiagramApp:
             self.drag_handles_corner = None
             self.drag_line_id = None
             self.drag_parrow = None
+            self.drag_iface_id = None
+            self.drag_name_key = None
             self.moving_selection = False
             self.move_group_ids.clear()
+            self._push_history()
         self._update_scrollregion()
 
     def on_right_click(self, event):
@@ -1171,6 +1674,128 @@ class DiagramApp:
             return None
         hits.sort(key=lambda it: it[0])
         return hits[0][1]
+
+    def _name_key_from_tags(self, tag_info):
+        if not tag_info:
+            return None
+        if "block_text" in tag_info:
+            rid = next((t for t in tag_info if t in self.rects), None)
+            return ("block", rid) if rid else None
+        if "verbindung_text" in tag_info:
+            lid = next((t for t in tag_info if t in self.lines), None)
+            return ("verbindung", lid) if lid else None
+        if "parrow_text" in tag_info:
+            tags = [t for t in tag_info if t not in ("current", "parrow", "parrow_text")]
+            if len(tags) >= 2 and tags[0] in self.lines and self.lines[tags[0]].get_parallel(tags[1]):
+                return ("parrow", tags[0], tags[1])
+            return None
+        if "iface_text" in tag_info:
+            iid = next((t for t in tag_info if t in self.ifaces), None)
+            return ("iface", iid) if iid else None
+        return None
+
+    def name_at(self, x, y):
+        z = self.zoom
+        cx, cy = x * z, y * z
+        hits = []
+
+        def consider(item, key):
+            if not item:
+                return
+            bb = self.canvas.bbox(item)
+            if not bb:
+                return
+            x1, y1, x2, y2 = bb
+            if x1 - 2 <= cx <= x2 + 2 and y1 - 2 <= cy <= y2 + 2:
+                hits.append(((x2 - x1) * (y2 - y1), key))
+
+        for rid, rect in self.rects.items():
+            consider(rect.canvas_text, ("block", rid))
+        for lid, line in self.lines.items():
+            consider(line.canvas_text, ("verbindung", lid))
+            for pa in line.parallel_arrows:
+                consider(pa.canvas_text, ("parrow", lid, pa.id))
+        for iid, iface in self.ifaces.items():
+            consider(iface.canvas_text, ("iface", iid))
+        if not hits:
+            return None
+        hits.sort(key=lambda it: it[0])
+        return hits[0][1]
+
+    def _labeled_object(self, key):
+        typ = key[0]
+        if typ == "block":
+            return self.rects.get(key[1])
+        if typ == "verbindung":
+            return self.lines.get(key[1])
+        if typ == "iface":
+            return self.ifaces.get(key[1])
+        if typ == "parrow":
+            line = self.lines.get(key[1])
+            return line.get_parallel(key[2]) if line else None
+        return None
+
+    def _redraw_labeled(self, key):
+        if key[0] == "parrow":
+            line = self.lines.get(key[1])
+            if line:
+                line.draw()
+            return
+        obj = self._labeled_object(key)
+        if obj:
+            obj.draw()
+
+    def _start_name_drag(self, key, x, y):
+        obj = self._labeled_object(key)
+        if not obj:
+            return False
+        self.select_object(key)
+        self.dragging = True
+        self.drag_name_key = key
+        nx, ny = obj.name_pos()
+        self.drag_name_grab = (x - nx, y - ny)
+        return True
+
+    def iface_at(self, x, y):
+        hits = []
+        for iid, iface in self.ifaces.items():
+            if iface.contains_point(x, y):
+                cx, cy = iface.circle_center()
+                hits.append((math.hypot(x - cx, y - cy), iid))
+        if not hits:
+            return None
+        hits.sort(key=lambda it: it[0])
+        return hits[0][1]
+
+    def verbindung_at(self, x, y, max_dist=6):
+        """Nächste Verbindung in Reichweite, auch innerhalb eines Blocks."""
+        hits = []
+        for lid, line in self.lines.items():
+            pts = line.polyline_points()
+            if not pts:
+                continue
+            dist = polyline_distance(pts, x, y)
+            if dist <= max_dist:
+                hits.append((dist, lid))
+        if not hits:
+            return None
+        hits.sort(key=lambda it: it[0])
+        return hits[0][1]
+
+    def parrow_at(self, x, y, max_dist=6):
+        hits = []
+        for lid, line in self.lines.items():
+            for pa in line.parallel_arrows:
+                pts = pa.geometry()
+                if not pts:
+                    continue
+                dist = polyline_distance(pts, x, y)
+                if dist <= max_dist:
+                    hits.append((dist, lid, pa.id))
+        if not hits:
+            return None
+        hits.sort(key=lambda it: it[0])
+        return (hits[0][1], hits[0][2])
 
     def _start_line_drag(self, source_id, x, y):
         self.line_drag_source = source_id
@@ -1219,15 +1844,25 @@ class DiagramApp:
 
     def _finish_line_drag(self, x, y):
         source_id = self.line_drag_source
+        iface_id = self.iface_at(x, y)
         target_id = self.rect_at(x, y)
         self._cancel_line_drag()
-        if not source_id or not target_id or target_id == source_id:
+        if not source_id:
             return
-        line = LineObj(self, source_id, target_id)
+        if iface_id:
+            iface = self.ifaces.get(iface_id)
+            if not iface or iface.block_id == source_id:
+                return
+            line = LineObj(self, source_id, iface_id, target_kind="iface")
+        elif target_id and target_id != source_id:
+            line = LineObj(self, source_id, target_id, target_kind="block")
+        else:
+            return
         self.lines[line.id] = line
         line.draw()
         self.set_mode("select")
         self.select_object(("verbindung", line.id))
+        self._push_history()
 
     def start_dragging_rect(self, rect_id, x, y):
         self._cancel_line_drag()
@@ -1237,6 +1872,7 @@ class DiagramApp:
         self.drag_handles_corner = None
         self.drag_line_id = None
         self.drag_parrow = None
+        self.drag_iface_id = None
         self.drag_last_pos = (x, y)
         selected_rects = [k[1] for k in self.selection if k[0] == "block"]
         if len(self.selection) > 1 and rect_id in selected_rects:
@@ -1254,6 +1890,7 @@ class DiagramApp:
         self.moving_selection = True
         self.drag_line_id = None
         self.drag_parrow = None
+        self.drag_iface_id = None
         self.drag_handles_corner = None
         self.drag_last_pos = (x, y)
         selected_rects = [k[1] for k in self.selection if k[0] == "block"]
@@ -1290,7 +1927,11 @@ class DiagramApp:
         for lid, line in self.lines.items():
             if not line.waypoint:
                 continue
-            both_ends = line.source in self.move_group_ids and line.target in self.move_group_ids
+            tgt_block = line.target
+            if line.target_kind == "iface":
+                iface = self.ifaces.get(line.target)
+                tgt_block = iface.block_id if iface else None
+            both_ends = line.source in self.move_group_ids and tgt_block in self.move_group_ids
             if both_ends or lid in selected_lines:
                 line.waypoint = (line.waypoint[0] + dx, line.waypoint[1] + dy)
         if moved:
@@ -1342,6 +1983,9 @@ class DiagramApp:
                 geom = pa.geometry()
                 if geom and bbox_intersects(box, points_bbox(geom)):
                     keys.append(("parrow", line.id, pa.id))
+        for iid, iface in self.ifaces.items():
+            if bbox_intersects(box, iface.bbox()):
+                keys.append(("iface", iid))
         return keys
 
     def start_resizing(self, rect_id, corner, x, y):
@@ -1372,6 +2016,12 @@ class DiagramApp:
             except Exception:
                 pass
             self.parallel_arrow_btn = None
+        if self.iface_btn:
+            try:
+                self.iface_btn.destroy()
+            except Exception:
+                pass
+            self.iface_btn = None
 
     def _set_offset_field(self, value=None, enabled=False):
         self._syncing_attrs = True
@@ -1398,6 +2048,20 @@ class DiagramApp:
             else:
                 self.attr_edge_label.grid_remove()
                 self.attr_edge_combo.grid_remove()
+        finally:
+            self._syncing_attrs = False
+
+    def _set_side_field(self, side="e", visible=False):
+        self._syncing_attrs = True
+        try:
+            self.attr_side_var.set(InterfaceObj.SIDE_LABELS.get(side, "rechts"))
+            if visible:
+                self.attr_side_label.grid()
+                self.attr_side_combo.grid()
+                self.attr_side_combo.state(["!disabled", "readonly"])
+            else:
+                self.attr_side_label.grid_remove()
+                self.attr_side_combo.grid_remove()
         finally:
             self._syncing_attrs = False
 
@@ -1436,6 +2100,11 @@ class DiagramApp:
             if pa:
                 pa.selected = sel
                 line.draw()
+        elif typ == "iface":
+            iface = self.ifaces.get(key[1])
+            if iface:
+                iface.selected = sel
+                iface.draw()
 
     def select_objects(self, keys):
         for old in self.selection:
@@ -1452,6 +2121,9 @@ class DiagramApp:
         else:
             self.select_objects([obj])
 
+    def _set_type_field(self, text=""):
+        self.attr_type_var.set(text)
+
     def _set_name_field(self, value="", enabled=False):
         self._syncing_attrs = True
         try:
@@ -1466,17 +2138,21 @@ class DiagramApp:
     def _refresh_attr_from_selection(self):
         self._clear_parallel_btn()
         if len(self.selection) > 1:
+            self._set_type_field("Mehrfachauswahl")
             self._set_name_field(enabled=False)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(visible=False)
+            self._set_side_field(visible=False)
             return
         obj = self.selected_obj
         if obj is None:
+            self._set_type_field("")
             self._set_name_field(enabled=False)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(visible=False)
+            self._set_side_field(visible=False)
             return
         typ = obj[0]
         if typ == "block":
@@ -1485,16 +2161,25 @@ class DiagramApp:
             if not r:
                 return
             r.set_selected(True)
+            self._set_type_field("Block")
             self._set_name_field(r.name, enabled=True)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(r.dashed, visible=True)
+            self._set_side_field(visible=False)
+            self.iface_btn = ttk.Button(
+                self.attr_container,
+                text="Interface erstellen",
+                command=self.create_interface
+            )
+            self.iface_btn.grid(row=6, column=0, columnspan=2, pady=(6, 6), sticky="ew")
         elif typ == "verbindung":
             oid = obj[1]
             l = self.lines.get(oid)
             if not l:
                 return
             l.set_selected(True)
+            self._set_type_field("Verbindung")
             self._set_name_field(l.name, enabled=True)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(l.arrow_at_start, enabled=True, visible=True)
@@ -1504,7 +2189,8 @@ class DiagramApp:
                 text="Datenfluss erstellen",
                 command=self.create_parallel_arrow
             )
-            self.parallel_arrow_btn.grid(row=4, column=0, columnspan=2, pady=(6, 6), sticky="ew")
+            self.parallel_arrow_btn.grid(row=6, column=0, columnspan=2, pady=(6, 6), sticky="ew")
+            self._set_side_field(visible=False)
         elif typ == "parrow":
             _, lid, aid = obj
             l = self.lines.get(lid)
@@ -1513,10 +2199,24 @@ class DiagramApp:
                 return
             pa.selected = True
             l.draw()
+            self._set_type_field("Datenfluss")
             self._set_name_field(pa.name, enabled=True)
             self._set_offset_field(pa.offset, enabled=True)
             self._set_arrow_field(pa.arrow_at_start, enabled=True, visible=True)
             self._set_edge_field(visible=False)
+            self._set_side_field(visible=False)
+        elif typ == "iface":
+            iface = self.ifaces.get(obj[1])
+            if not iface:
+                return
+            iface.selected = True
+            iface.draw()
+            self._set_type_field("Interface")
+            self._set_name_field(iface.name, enabled=True)
+            self._set_offset_field(enabled=False)
+            self._set_arrow_field(visible=False)
+            self._set_edge_field(visible=False)
+            self._set_side_field(iface.side, visible=True)
 
     def _on_name_changed(self):
         if getattr(self, "_syncing_attrs", False):
@@ -1534,6 +2234,7 @@ class DiagramApp:
                 return
             r.name = name
             r.draw()
+            self._push_history()
         elif typ == "verbindung":
             l = self.lines.get(self.selected_obj[1])
             if not l:
@@ -1543,6 +2244,7 @@ class DiagramApp:
                 return
             l.name = name
             l.draw()
+            self._push_history()
         elif typ == "parrow":
             _, lid, aid = self.selected_obj
             l = self.lines.get(lid)
@@ -1554,6 +2256,17 @@ class DiagramApp:
                 return
             pa.name = name
             l.draw()
+            self._push_history()
+        elif typ == "iface":
+            iface = self.ifaces.get(self.selected_obj[1])
+            if not iface:
+                return
+            if not name:
+                self._set_name_field(iface.name, enabled=True)
+                return
+            iface.name = name
+            iface.draw()
+            self._push_history()
 
     def _on_offset_changed(self):
         if getattr(self, "_syncing_attrs", False):
@@ -1573,6 +2286,8 @@ class DiagramApp:
             pa.offset = 6
             self.attr_offset_var.set("6")
         l.draw()
+        if not self.dragging:
+            self._push_history()
 
     def _on_arrow_changed(self):
         if getattr(self, "_syncing_attrs", False):
@@ -1587,6 +2302,7 @@ class DiagramApp:
                 return
             line.arrow_at_start = at_start
             line.draw()
+            self._push_history()
         elif typ == "parrow":
             _, lid, aid = self.selected_obj
             line = self.lines.get(lid)
@@ -1595,6 +2311,7 @@ class DiagramApp:
                 return
             pa.arrow_at_start = at_start
             line.draw()
+            self._push_history()
 
     def _on_edge_changed(self):
         if getattr(self, "_syncing_attrs", False):
@@ -1606,6 +2323,34 @@ class DiagramApp:
             return
         r.dashed = self.attr_edge_var.get() == "gestrichelt"
         r.draw()
+        self._push_history()
+
+    def _on_side_changed(self):
+        if getattr(self, "_syncing_attrs", False):
+            return
+        if not self.selected_obj or self.selected_obj[0] != "iface":
+            return
+        iface = self.ifaces.get(self.selected_obj[1])
+        if not iface:
+            return
+        side = InterfaceObj.LABEL_SIDES.get(self.attr_side_var.get())
+        if not side:
+            return
+        iface.side = side
+        iface.draw()
+        self.update_all_lines_for(iface.block_id)
+        self._push_history()
+
+    def create_interface(self):
+        if not self.selected_obj or self.selected_obj[0] != "block":
+            return
+        block = self.rects.get(self.selected_obj[1])
+        if not block:
+            return
+        iface = block.add_interface()
+        block.draw()
+        self.select_object(("iface", iface.id))
+        self._push_history()
 
     def create_parallel_arrow(self):
         """Datenfluss parallel zur ausgewählten Stammlinie anlegen."""
@@ -1618,6 +2363,7 @@ class DiagramApp:
         pa = line.add_parallel_arrow()
         line.draw()
         self.select_object(("parrow", line.id, pa.id))
+        self._push_history()
 
     # ---------------------------
     # Lines / Updates
@@ -1630,7 +2376,11 @@ class DiagramApp:
         else:
             rect_ids = {rect_id_or_iterable}
         for lid, line in self.lines.items():
-            if line.source in rect_ids or line.target in rect_ids:
+            tgt_block = line.target
+            if line.target_kind == "iface":
+                iface = self.ifaces.get(line.target)
+                tgt_block = iface.block_id if iface else None
+            if line.source in rect_ids or tgt_block in rect_ids or line.target in rect_ids:
                 line.draw()
 
     # ---------------------------
@@ -1654,9 +2404,13 @@ class DiagramApp:
                 if k[0] == "verbindung" and k[1] in self.lines:
                     self._delete_line(k[1])
             for k in keys:
+                if k[0] == "iface":
+                    self._delete_iface(k[1])
+            for k in keys:
                 if k[0] == "block" and k[1] in self.rects:
                     self._delete_rect(k[1])
             self.select_object(None)
+            self._push_history()
             return
         typ = self.selected_obj[0]
         if typ == "block":
@@ -1669,6 +2423,7 @@ class DiagramApp:
                 return
             self._delete_rect(oid)
             self.select_object(None)
+            self._push_history()
         elif typ == "verbindung":
             oid = self.selected_obj[1]
             if oid not in self.lines:
@@ -1678,6 +2433,7 @@ class DiagramApp:
             self._delete_line(oid)
             self.selected_obj = None
             self.select_object(None)
+            self._push_history()
         elif typ == "parrow":
             _, lid, aid = self.selected_obj
             line = self.lines.get(lid)
@@ -1688,9 +2444,43 @@ class DiagramApp:
             line.remove_parallel(aid)
             self.selected_obj = None
             self.select_object(("verbindung", lid))
+            self._push_history()
+        elif typ == "iface":
+            iid = self.selected_obj[1]
+            iface = self.ifaces.get(iid)
+            if not iface:
+                return
+            if not messagebox.askyesno("Löschen", "Interface und verbundene Verbindungen wirklich löschen?"):
+                return
+            bid = iface.block_id
+            self._delete_iface(iid)
+            self.select_object(("block", bid) if bid in self.rects else None)
+            self._push_history()
+
+    def _delete_iface(self, iid):
+        to_delete = [
+            lid for lid, l in self.lines.items()
+            if l.target_kind == "iface" and l.target == iid
+        ]
+        for lid in to_delete:
+            self._delete_line(lid)
+        iface = self.ifaces.get(iid)
+        if iface:
+            block = self.rects.get(iface.block_id)
+            if block:
+                block.remove_interface(iid)
+            else:
+                iface.destroy_canvas()
+                self.ifaces.pop(iid, None)
 
     def _delete_rect(self, oid):
-        to_delete_lines = [lid for lid, l in self.lines.items() if l.source == oid or l.target == oid]
+        iface_ids = [i.id for i in self.rects[oid].interfaces] if oid in self.rects else []
+        for iid in iface_ids:
+            self._delete_iface(iid)
+        to_delete_lines = [
+            lid for lid, l in self.lines.items()
+            if l.source == oid or (l.target_kind == "block" and l.target == oid)
+        ]
         for lid in to_delete_lines:
             self._delete_line(lid)
         r = self.rects.pop(oid, None)
@@ -1707,10 +2497,7 @@ class DiagramApp:
         file = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files","*.json"), ("All files","*.*")])
         if not file:
             return
-        data = {
-            "blocks": [r.to_dict() for r in self.rects.values()],
-            "verbindungen": [l.to_dict() for l in self.lines.values()]
-        }
+        data = self._diagram_data()
         try:
             with open(file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -1728,18 +2515,8 @@ class DiagramApp:
         except Exception as e:
             messagebox.showerror("Fehler", f"Laden fehlgeschlagen: {e}")
             return
-        # clear current
-        self._clear_all()
-        for rd in data.get("blocks", data.get("rects", [])):
-            r = RectObj.from_dict(self, rd)
-            self.rects[r.id] = r
-            r.draw()
-        for ld in data.get("verbindungen", data.get("lines", [])):
-            if ld.get("source") in self.rects and ld.get("target") in self.rects:
-                l = LineObj.from_dict(self, ld)
-                self.lines[l.id] = l
-                l.draw()
-        self._update_scrollregion()
+        self._apply_diagram_data(data)
+        self._reset_history()
         messagebox.showinfo("Geladen", f"Datei {file} geladen.")
 
     def _clear_all(self):
@@ -1747,6 +2524,7 @@ class DiagramApp:
         self.canvas.delete("all")
         self.rects.clear()
         self.lines.clear()
+        self.ifaces.clear()
         self.selection = []
         self.selected_obj = None
         self.marquee_id = None
@@ -1769,6 +2547,7 @@ class DiagramApp:
         rect_ids = set()
         line_ids = set()
         parrow_ids = set()
+        iface_ids = set()
         for key in self.selection:
             if key[0] == "block" and key[1] in self.rects:
                 rect_ids.add(key[1])
@@ -1776,18 +2555,29 @@ class DiagramApp:
                 line_ids.add(key[1])
             elif key[0] == "parrow":
                 parrow_ids.add((key[1], key[2]))
+            elif key[0] == "iface" and key[1] in self.ifaces:
+                iface_ids.add(key[1])
         extra = set()
         for rid in list(rect_ids):
             r = self.rects.get(rid)
             if r:
                 extra |= self._contained_ids(r)
         rect_ids |= extra
-        return rect_ids, line_ids, parrow_ids
+        for rid in rect_ids:
+            r = self.rects.get(rid)
+            if r:
+                for iface in r.interfaces:
+                    iface_ids.add(iface.id)
+        return rect_ids, line_ids, parrow_ids, iface_ids
 
-    def _clipboard_export_bbox(self, rect_ids, line_ids, parrow_ids):
+    def _clipboard_export_bbox(self, rect_ids, line_ids, parrow_ids, iface_ids):
         boxes = []
         for rid in rect_ids:
             boxes.append(self.rects[rid].bbox)
+        for iid in iface_ids:
+            iface = self.ifaces.get(iid)
+            if iface:
+                boxes.append(iface.bbox())
         for lid in line_ids:
             pts = self.lines[lid].polyline_points()
             if pts:
@@ -1845,6 +2635,7 @@ class DiagramApp:
         gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wintypes.COLORREF]
         gdi32.CreatePen.restype = wintypes.HPEN
         gdi32.Rectangle.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        gdi32.Ellipse.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         gdi32.Polyline.argtypes = [wintypes.HDC, ctypes.c_void_p, ctypes.c_int]
         gdi32.Polygon.argtypes = [wintypes.HDC, ctypes.c_void_p, ctypes.c_int]
         gdi32.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
@@ -1876,8 +2667,8 @@ class DiagramApp:
         kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
         kernel32.GlobalFree.argtypes = [wintypes.HANDLE]
 
-        rect_ids, line_ids, parrow_ids = self._clipboard_export_set()
-        box = self._clipboard_export_bbox(rect_ids, line_ids, parrow_ids)
+        rect_ids, line_ids, parrow_ids, iface_ids = self._clipboard_export_set()
+        box = self._clipboard_export_bbox(rect_ids, line_ids, parrow_ids, iface_ids)
         if not box:
             raise RuntimeError("Keine Zeichenobjekte in der Auswahl.")
 
@@ -1955,6 +2746,22 @@ class DiagramApp:
             name = r.name or ""
             if name:
                 gdi32.TextOutW(hdc, mx((x1 + x2) / 2), my(y1) + 4, name, len(name))
+
+        gdi32.SelectObject(hdc, black_pen)
+        gdi32.SelectObject(hdc, null_br)
+        for iid in iface_ids:
+            iface = self.ifaces.get(iid)
+            if not iface:
+                continue
+            ax, ay = iface.attach_point()
+            sx, sy = iface.stem_end()
+            cx, cy = iface.circle_center()
+            r = iface.RADIUS
+            draw_poly(hdc, ((ax, ay), (sx, sy)), closed=False)
+            gdi32.Ellipse(hdc, mx(cx - r), my(cy - r), mx(cx + r) + 1, my(cy + r) + 1)
+            name = iface.name or ""
+            if name:
+                gdi32.TextOutW(hdc, mx(cx), my(cy - r) - 16, name, len(name))
 
         def paint_polyline(points, pen, brush, text, text_color, arrow_at_start=False):
             if not points or len(points) < 2:
@@ -2041,8 +2848,10 @@ class DiagramApp:
     def toggle_sidebar(self):
         if self.attr_visible:
             self.right_frame.forget()
+            self.attr_restore.pack(side=tk.RIGHT, fill=tk.Y)
             self.attr_visible = False
         else:
+            self.attr_restore.forget()
             self.right_frame.pack(side=tk.RIGHT, fill=tk.Y)
             self.attr_visible = True
 
