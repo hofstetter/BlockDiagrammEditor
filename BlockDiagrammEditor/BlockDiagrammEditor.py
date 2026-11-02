@@ -8,13 +8,6 @@ Einfacher Diagram-Editor mit Tkinter
 - Linien zwischen Rechtecken (mit Namen und Pfeil Richtung Auswahlreihenfolge)
 - Speichern / Laden im JSON-Format
 
-Status 30.10.2025: 
-Zusätzliche Pfeillinien werden zwar gezeichnet, 
-aber beim späteren Zeichnen mit ananlogen Koordinaten wie die ursprünglichen Linien ausgegeben (d.h. kein Versatz).
-Testeshalber für bei der Ausgabe der Linie (Draw) nun ein fester Versatz eingefügt. 
-Dies muss noch angepasst werden auf eine parallel Verschiebung,analog beim Erstellen der Pfeillinie 
-
-Sichtbarkeit der Rechtecke: wird momentan druch die Reihenfolge der Erstellung vorgegeben (altes verschwindet hinter einem Neueren)  Muss anpassbar sein
 
 """
 
