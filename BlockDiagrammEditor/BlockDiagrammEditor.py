@@ -19,7 +19,7 @@ Sichtbarkeit der Rechtecke: wird momentan druch die Reihenfolge der Erstellung v
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, simpledialog, messagebox
+from tkinter import ttk, filedialog, simpledialog, messagebox, colorchooser
 import json
 import math
 import uuid
@@ -224,6 +224,27 @@ def points_bbox(points):
     ys = [p[1] for p in points]
     return (min(xs), min(ys), max(xs), max(ys))
 
+def parse_color(value, default="#000000"):
+    if not value:
+        return default
+    s = str(value).strip()
+    if s.startswith("#") and len(s) == 4:
+        s = "#" + "".join(ch * 2 for ch in s[1:])
+    if s.startswith("#") and len(s) == 7:
+        try:
+            int(s[1:], 16)
+            return s.lower()
+        except ValueError:
+            return default
+    return default
+
+def hex_to_rgb(color, default=(0, 0, 0)):
+    s = parse_color(color, "#%02x%02x%02x" % default)
+    try:
+        return int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16)
+    except ValueError:
+        return default
+
 def parse_name_offset(data):
     v = data.get("name_offset") if isinstance(data, dict) else None
     if isinstance(v, (list, tuple)) and len(v) >= 2:
@@ -302,12 +323,13 @@ def sync_open_arrow(canvas, item_id, points, at_start, zoom, color, width, tags)
 # ---------------------------
 
 class RectObj:
-    def __init__(self, app, bbox, name=None, obj_id=None, dashed=False, name_offset=None):
+    def __init__(self, app, bbox, name=None, obj_id=None, dashed=False, name_offset=None, color=None):
         self.app = app
         self.id = obj_id or str(uuid.uuid4())
         self.bbox = rect_normalize(bbox)  # (x1,y1,x2,y2)
         self.name = name if name is not None else app.next_object_name("B")
         self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
+        self.color = parse_color(color)
         self.dashed = bool(dashed)
         self.interfaces = []
         # canvas object ids
@@ -322,6 +344,7 @@ class RectObj:
             "bbox": list(self.bbox),
             "name": self.name,
             "name_offset": [self.name_offset[0], self.name_offset[1]],
+            "color": self.color,
             "dashed": self.dashed,
             "interfaces": [i.to_dict() for i in self.interfaces],
         }
@@ -331,6 +354,7 @@ class RectObj:
         rect = cls(
             app, tuple(d["bbox"]), name=d.get("name"), obj_id=d["id"],
             dashed=d.get("dashed", False), name_offset=parse_name_offset(d),
+            color=d.get("color"),
         )
         for idata in d.get("interfaces", []):
             iface = InterfaceObj.from_dict(rect, idata)
@@ -356,19 +380,20 @@ class RectObj:
         zx1, zy1, zx2, zy2 = x1 * z, y1 * z, x2 * z, y2 * z
         nx, ny = self.name_pos()
         width = 3 if self.selected else 2
+        color = self.color
         if self.canvas_rect is None:
             self.canvas_rect = c.create_rectangle(
-                zx1, zy1, zx2, zy2, fill="", outline="#000000", width=width,
+                zx1, zy1, zx2, zy2, fill="", outline=color, width=width,
                 dash=self._dash_style(), tags=("block", self.id)
             )
             self.canvas_text = c.create_text(
-                nx * z, ny * z, text=self.name, anchor="n", tags=("block_text", self.id)
+                nx * z, ny * z, text=self.name, fill=color, anchor="n", tags=("block_text", self.id)
             )
         else:
             c.coords(self.canvas_rect, zx1, zy1, zx2, zy2)
             c.coords(self.canvas_text, nx * z, ny * z)
-            c.itemconfig(self.canvas_text, text=self.name)
-            c.itemconfig(self.canvas_rect, fill="", outline="#000000", width=width, dash=self._dash_style())
+            c.itemconfig(self.canvas_text, text=self.name, fill=color)
+            c.itemconfig(self.canvas_rect, fill="", outline=color, width=width, dash=self._dash_style())
         c.tag_raise(self.canvas_text)
         if self.selected:
             self._ensure_handles()
@@ -423,7 +448,7 @@ class RectObj:
         c = self.app.canvas
         if self.canvas_rect:
             c.itemconfig(
-                self.canvas_rect, fill="", outline="#000000",
+                self.canvas_rect, fill="", outline=self.color,
                 width=3 if sel else 2, dash=self._dash_style()
             )
         self.draw()
@@ -489,13 +514,14 @@ class InterfaceObj:
     SIDE_LABELS = {"e": "rechts", "w": "links", "n": "oben", "s": "unten"}
     LABEL_SIDES = {v: k for k, v in SIDE_LABELS.items()}
 
-    def __init__(self, block, side="e", t=0.5, name=None, obj_id=None, name_offset=None):
+    def __init__(self, block, side="e", t=0.5, name=None, obj_id=None, name_offset=None, color=None):
         self.block = block
         self.id = obj_id or str(uuid.uuid4())
         self.side = side if side in self.SIDES else "e"
         self.t = min(0.92, max(0.08, float(t)))
         self.name = name if name is not None else block.app.next_object_name("I")
         self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
+        self.color = parse_color(color)
         self.selected = False
         self.canvas_stem = None
         self.canvas_circle = None
@@ -510,6 +536,7 @@ class InterfaceObj:
             "id": self.id,
             "name": self.name,
             "name_offset": [self.name_offset[0], self.name_offset[1]],
+            "color": self.color,
             "side": self.side,
             "t": self.t,
         }
@@ -523,6 +550,7 @@ class InterfaceObj:
             name=d.get("name"),
             obj_id=d.get("id"),
             name_offset=parse_name_offset(d),
+            color=d.get("color"),
         )
 
     def attach_point(self):
@@ -611,7 +639,7 @@ class InterfaceObj:
         sx, sy = self.stem_end()
         cx, cy = self.circle_center()
         r = self.RADIUS
-        color = "#0077ff" if self.selected else "#000000"
+        color = self.color
         width = 3 if self.selected else 2
         tags = ("iface", self.id)
         if self.canvas_stem is None:
@@ -667,13 +695,14 @@ class ParallelArrow:
 
     LENGTH_RATIO = 0.38
 
-    def __init__(self, line, offset=16, name=None, obj_id=None, length_ratio=None, arrow_at_start=False, name_offset=None):
+    def __init__(self, line, offset=16, name=None, obj_id=None, length_ratio=None, arrow_at_start=False, name_offset=None, color=None):
         self.line = line
         self.id = obj_id or str(uuid.uuid4())
         self.offset = offset
         self.length_ratio = length_ratio if length_ratio is not None else self.LENGTH_RATIO
         self.name = name if name is not None else line.app.next_object_name("D")
         self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
+        self.color = parse_color(color, "#555555")
         self.arrow_at_start = bool(arrow_at_start)
         self.canvas_line = None
         self.canvas_arrow = None
@@ -687,6 +716,7 @@ class ParallelArrow:
             "length_ratio": self.length_ratio,
             "name": self.name,
             "name_offset": [self.name_offset[0], self.name_offset[1]],
+            "color": self.color,
             "arrow_at_start": self.arrow_at_start,
         }
 
@@ -700,6 +730,7 @@ class ParallelArrow:
             length_ratio=d.get("length_ratio"),
             arrow_at_start=d.get("arrow_at_start", False),
             name_offset=parse_name_offset(d),
+            color=d.get("color"),
         )
 
     def geometry(self):
@@ -734,7 +765,7 @@ class ParallelArrow:
         if not pts:
             return
         flat = [v for p in pts for v in (p[0] * z, p[1] * z)]
-        color = "#0077ff" if self.selected else "#555555"
+        color = self.color
         width = 3 if self.selected else 2
         tags = ("parrow", self.line.id, self.id)
         if self.canvas_line is None:
@@ -775,7 +806,7 @@ class ParallelArrow:
 
 
 class LineObj:
-    def __init__(self, app, source_rect_id, target_rect_id, name=None, obj_id=None, waypoint=None, arrow_at_start=False, target_kind="block", name_offset=None):
+    def __init__(self, app, source_rect_id, target_rect_id, name=None, obj_id=None, waypoint=None, arrow_at_start=False, target_kind="block", name_offset=None, color=None):
         self.app = app
         self.id = obj_id or str(uuid.uuid4())
         self.source = source_rect_id
@@ -783,6 +814,7 @@ class LineObj:
         self.target_kind = target_kind if target_kind in ("block", "iface") else "block"
         self.name = name if name is not None else app.next_object_name("V")
         self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
+        self.color = parse_color(color)
         self.line_offset = 0
         self.waypoint = tuple(waypoint) if waypoint else None
         self.arrow_at_start = bool(arrow_at_start)
@@ -802,6 +834,7 @@ class LineObj:
             "target_kind": self.target_kind,
             "name": self.name,
             "name_offset": [self.name_offset[0], self.name_offset[1]],
+            "color": self.color,
             "arrow_at_start": self.arrow_at_start,
             "parallel_arrows": [a.to_dict() for a in self.parallel_arrows]
         }
@@ -817,6 +850,7 @@ class LineObj:
             waypoint=wp, arrow_at_start=d.get("arrow_at_start", False),
             target_kind=d.get("target_kind", "block"),
             name_offset=parse_name_offset(d),
+            color=d.get("color"),
         )
         for ad in d.get("parallel_arrows", []):
             line.parallel_arrows.append(ParallelArrow.from_dict(line, ad))
@@ -905,7 +939,7 @@ class LineObj:
         if not points:
             return
         flat = [v for p in points for v in (p[0] * z, p[1] * z)]
-        color = "#0077ff" if self.selected else "#000000"
+        color = self.color
         width = 3 if self.selected else 2
         tags = ("verbindung", self.id)
         if self.canvas_line is None:
@@ -1056,12 +1090,12 @@ class DiagramApp:
 
         # Left toolbar
         ttk.Label(self.left_frame, text="Menü", font=("Arial", 12, "bold")).pack(pady=6)
-        self.btn_draw_rect = ttk.Button(self.left_frame, text="Block zeichnen", command=lambda: self.toggle_mode("draw_block"))
-        self.btn_draw_line = ttk.Button(self.left_frame, text="Verbindung erstellen", command=lambda: self.toggle_mode("draw_verbindung"))
+        self.btn_draw_rect = ttk.Button(self.left_frame, text="Block", command=lambda: self.toggle_mode("draw_block"))
+        self.btn_draw_line = ttk.Button(self.left_frame, text="Verbindung", command=lambda: self.toggle_mode("draw_verbindung"))
         self.btn_delete = ttk.Button(self.left_frame, text="Löschen", command=self.delete_selected)
         self.btn_save = ttk.Button(self.left_frame, text="Speichern (JSON)", command=self.save_json)
         self.btn_load = ttk.Button(self.left_frame, text="Laden (JSON)", command=self.load_json)
-        self.btn_copy_image = ttk.Button(self.left_frame, text="Als Bild kopieren", command=self.copy_canvas_to_clipboard)
+        self.btn_copy_image = ttk.Button(self.left_frame, text="Grafik ins Clipboard", command=self.copy_canvas_to_clipboard)
 
         for w in (self.btn_draw_rect, self.btn_draw_line, self.btn_delete, self.btn_copy_image, self.btn_save, self.btn_load):
             w.pack(fill=tk.X, padx=8, pady=4)
@@ -1126,50 +1160,63 @@ class DiagramApp:
         self.attr_name_entry.bind("<Return>", lambda e: self._on_name_changed() or "break")
         self.attr_name_entry.bind("<FocusOut>", lambda e: self._on_name_changed())
 
+        ttk.Label(self.attr_container, text="Farbe:").grid(row=2, column=0, sticky="w")
+        self.attr_color_row = ttk.Frame(self.attr_container)
+        self.attr_color_row.grid(row=2, column=1, sticky="ew")
+        self.attr_color_preview = tk.Canvas(
+            self.attr_color_row, width=28, height=18, highlightthickness=1,
+            highlightbackground="#888888", bg="#000000"
+        )
+        self.attr_color_preview.pack(side=tk.LEFT)
+        self.attr_color_preview.bind("<Button-1>", lambda e: self._on_color_pick())
+        self.attr_color_btn = ttk.Button(self.attr_color_row, text="Wählen…", command=self._on_color_pick)
+        self.attr_color_btn.pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+
         self.attr_edge_label = ttk.Label(self.attr_container, text="Kante:")
-        self.attr_edge_label.grid(row=2, column=0, sticky="w")
+        self.attr_edge_label.grid(row=3, column=0, sticky="w")
         self.attr_edge_var = tk.StringVar(value="ausgezogen")
         self.attr_edge_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_edge_var,
             values=("ausgezogen", "gestrichelt"), state="readonly", width=12
         )
-        self.attr_edge_combo.grid(row=2, column=1, sticky="ew")
+        self.attr_edge_combo.grid(row=3, column=1, sticky="ew")
         self.attr_edge_combo.bind("<<ComboboxSelected>>", lambda e: self._on_edge_changed())
 
         self.attr_side_label = ttk.Label(self.attr_container, text="Seite:")
-        self.attr_side_label.grid(row=3, column=0, sticky="w")
+        self.attr_side_label.grid(row=4, column=0, sticky="w")
         self.attr_side_var = tk.StringVar(value="rechts")
         self.attr_side_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_side_var,
             values=("rechts", "links", "oben", "unten"), state="readonly", width=12
         )
-        self.attr_side_combo.grid(row=3, column=1, sticky="ew")
+        self.attr_side_combo.grid(row=4, column=1, sticky="ew")
         self.attr_side_combo.bind("<<ComboboxSelected>>", lambda e: self._on_side_changed())
 
-        ttk.Label(self.attr_container, text="Abstand:").grid(row=4, column=0, sticky="w")
+        ttk.Label(self.attr_container, text="Abstand:").grid(row=5, column=0, sticky="w")
         self.attr_offset_var = tk.StringVar()
         self.attr_offset_spin = ttk.Spinbox(
             self.attr_container, from_=-200, to=200, increment=2,
             textvariable=self.attr_offset_var, command=self._on_offset_changed
         )
-        self.attr_offset_spin.grid(row=4, column=1, sticky="ew")
+        self.attr_offset_spin.grid(row=5, column=1, sticky="ew")
         self.attr_offset_spin.bind("<Return>", lambda e: self._on_offset_changed())
         self.attr_offset_spin.bind("<FocusOut>", lambda e: self._on_offset_changed())
 
         self.attr_arrow_label = ttk.Label(self.attr_container, text="Pfeilspitze:")
-        self.attr_arrow_label.grid(row=5, column=0, sticky="w")
+        self.attr_arrow_label.grid(row=6, column=0, sticky="w")
         self.attr_arrow_var = tk.StringVar(value="Ende")
         self.attr_arrow_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_arrow_var,
             values=("Ende", "Anfang"), state="readonly", width=12
         )
-        self.attr_arrow_combo.grid(row=5, column=1, sticky="ew")
+        self.attr_arrow_combo.grid(row=6, column=1, sticky="ew")
         self.attr_arrow_combo.bind("<<ComboboxSelected>>", lambda e: self._on_arrow_changed())
 
         for i in range(2):
             self.attr_container.grid_columnconfigure(i, weight=1)
 
         self.attr_name_entry.state(["disabled"])
+        self.attr_color_btn.state(["disabled"])
         self.attr_offset_spin.state(["disabled"])
         self.attr_arrow_combo.state(["disabled"])
         self.attr_edge_combo.state(["disabled"])
@@ -1653,10 +1700,10 @@ class DiagramApp:
 
     def on_right_click(self, event):
         menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label="Block zeichnen", command=lambda: self.toggle_mode("draw_block"))
-        menu.add_command(label="Verbindung erstellen", command=lambda: self.toggle_mode("draw_verbindung"))
+        menu.add_command(label="Block", command=lambda: self.toggle_mode("draw_block"))
+        menu.add_command(label="Verbindung", command=lambda: self.toggle_mode("draw_verbindung"))
         menu.add_separator()
-        menu.add_command(label="Als Bild kopieren", command=self.copy_canvas_to_clipboard)
+        menu.add_command(label="Grafik ins Clipboard", command=self.copy_canvas_to_clipboard)
         menu.post(event.x_root, event.y_root)
 
     # ---------------------------
@@ -2124,6 +2171,31 @@ class DiagramApp:
     def _set_type_field(self, text=""):
         self.attr_type_var.set(text)
 
+    def _set_color_field(self, color="#000000", enabled=False):
+        if enabled:
+            fill = parse_color(color)
+            self.attr_color_preview.configure(bg=fill)
+            self.attr_color_btn.state(["!disabled"])
+        else:
+            self.attr_color_preview.configure(bg="#dddddd")
+            self.attr_color_btn.state(["disabled"])
+
+    def _on_color_pick(self):
+        if getattr(self, "_syncing_attrs", False):
+            return
+        if not self.selected_obj:
+            return
+        obj = self._labeled_object(self.selected_obj)
+        if not obj:
+            return
+        _rgb, chosen = colorchooser.askcolor(color=obj.color, title="Farbe", parent=self.root)
+        if not chosen:
+            return
+        obj.color = parse_color(chosen)
+        self._redraw_labeled(self.selected_obj)
+        self._set_color_field(obj.color, enabled=True)
+        self._push_history()
+
     def _set_name_field(self, value="", enabled=False):
         self._syncing_attrs = True
         try:
@@ -2140,6 +2212,7 @@ class DiagramApp:
         if len(self.selection) > 1:
             self._set_type_field("Mehrfachauswahl")
             self._set_name_field(enabled=False)
+            self._set_color_field(enabled=False)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(visible=False)
@@ -2149,6 +2222,7 @@ class DiagramApp:
         if obj is None:
             self._set_type_field("")
             self._set_name_field(enabled=False)
+            self._set_color_field(enabled=False)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(visible=False)
@@ -2163,6 +2237,7 @@ class DiagramApp:
             r.set_selected(True)
             self._set_type_field("Block")
             self._set_name_field(r.name, enabled=True)
+            self._set_color_field(r.color, enabled=True)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(r.dashed, visible=True)
@@ -2172,7 +2247,7 @@ class DiagramApp:
                 text="Interface erstellen",
                 command=self.create_interface
             )
-            self.iface_btn.grid(row=6, column=0, columnspan=2, pady=(6, 6), sticky="ew")
+            self.iface_btn.grid(row=7, column=0, columnspan=2, pady=(6, 6), sticky="ew")
         elif typ == "verbindung":
             oid = obj[1]
             l = self.lines.get(oid)
@@ -2181,6 +2256,7 @@ class DiagramApp:
             l.set_selected(True)
             self._set_type_field("Verbindung")
             self._set_name_field(l.name, enabled=True)
+            self._set_color_field(l.color, enabled=True)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(l.arrow_at_start, enabled=True, visible=True)
             self._set_edge_field(visible=False)
@@ -2189,7 +2265,7 @@ class DiagramApp:
                 text="Datenfluss erstellen",
                 command=self.create_parallel_arrow
             )
-            self.parallel_arrow_btn.grid(row=6, column=0, columnspan=2, pady=(6, 6), sticky="ew")
+            self.parallel_arrow_btn.grid(row=7, column=0, columnspan=2, pady=(6, 6), sticky="ew")
             self._set_side_field(visible=False)
         elif typ == "parrow":
             _, lid, aid = obj
@@ -2201,6 +2277,7 @@ class DiagramApp:
             l.draw()
             self._set_type_field("Datenfluss")
             self._set_name_field(pa.name, enabled=True)
+            self._set_color_field(pa.color, enabled=True)
             self._set_offset_field(pa.offset, enabled=True)
             self._set_arrow_field(pa.arrow_at_start, enabled=True, visible=True)
             self._set_edge_field(visible=False)
@@ -2213,6 +2290,7 @@ class DiagramApp:
             iface.draw()
             self._set_type_field("Interface")
             self._set_name_field(iface.name, enabled=True)
+            self._set_color_field(iface.color, enabled=True)
             self._set_offset_field(enabled=False)
             self._set_arrow_field(visible=False)
             self._set_edge_field(visible=False)
@@ -2736,18 +2814,28 @@ class DiagramApp:
         gdi32.SetTextAlign(hdc, TA_CENTER | TA_TOP)
         gdi32.Rectangle(hdc, 0, 0, width, height)
 
+        extra_pens = []
+
+        def stroke_pen(hex_color, dashed=False):
+            r, g, b = hex_to_rgb(hex_color)
+            cref = col(r, g, b)
+            pen = gdi32.CreatePen(PS_DASH if dashed else PS_SOLID, 1 if dashed else 2, cref)
+            extra_pens.append(pen)
+            gdi32.SelectObject(hdc, pen)
+            gdi32.SetTextColor(hdc, cref)
+            return cref
+
         null_br = gdi32.GetStockObject(NULL_BRUSH)
         gdi32.SelectObject(hdc, null_br)
         for rid in rect_ids:
             r = self.rects[rid]
             x1, y1, x2, y2 = r.bbox
-            gdi32.SelectObject(hdc, dash_pen if r.dashed else black_pen)
+            stroke_pen(r.color, r.dashed)
             gdi32.Rectangle(hdc, mx(x1), my(y1), mx(x2) + 1, my(y2) + 1)
             name = r.name or ""
             if name:
                 gdi32.TextOutW(hdc, mx((x1 + x2) / 2), my(y1) + 4, name, len(name))
 
-        gdi32.SelectObject(hdc, black_pen)
         gdi32.SelectObject(hdc, null_br)
         for iid in iface_ids:
             iface = self.ifaces.get(iid)
@@ -2756,12 +2844,13 @@ class DiagramApp:
             ax, ay = iface.attach_point()
             sx, sy = iface.stem_end()
             cx, cy = iface.circle_center()
-            r = iface.RADIUS
+            rad = iface.RADIUS
+            stroke_pen(iface.color)
             draw_poly(hdc, ((ax, ay), (sx, sy)), closed=False)
-            gdi32.Ellipse(hdc, mx(cx - r), my(cy - r), mx(cx + r) + 1, my(cy + r) + 1)
+            gdi32.Ellipse(hdc, mx(cx - rad), my(cy - rad), mx(cx + rad) + 1, my(cy + rad) + 1)
             name = iface.name or ""
             if name:
-                gdi32.TextOutW(hdc, mx(cx), my(cy - r) - 16, name, len(name))
+                gdi32.TextOutW(hdc, mx(cx), my(cy - rad) - 16, name, len(name))
 
         def paint_polyline(points, pen, brush, text, text_color, arrow_at_start=False):
             if not points or len(points) < 2:
@@ -2784,13 +2873,21 @@ class DiagramApp:
 
         for lid in line_ids:
             line = self.lines[lid]
+            r, g, b = hex_to_rgb(line.color)
+            cref = col(r, g, b)
+            lpen = gdi32.CreatePen(PS_SOLID, 2, cref)
+            extra_pens.append(lpen)
             paint_polyline(
-                line.polyline_points(), black_pen, black_br, line.name, col(0, 0, 0),
+                line.polyline_points(), lpen, black_br, line.name, cref,
                 arrow_at_start=line.arrow_at_start,
             )
             for pa in line.parallel_arrows:
+                pr, pg, pb = hex_to_rgb(pa.color)
+                pcref = col(pr, pg, pb)
+                ppen = gdi32.CreatePen(PS_SOLID, 2, pcref)
+                extra_pens.append(ppen)
                 paint_polyline(
-                    pa.geometry(), gray_pen, gray_br, pa.name, col(85, 85, 85),
+                    pa.geometry(), ppen, gray_br, pa.name, pcref,
                     arrow_at_start=pa.arrow_at_start,
                 )
         for lid, aid in parrow_ids:
@@ -2799,8 +2896,12 @@ class DiagramApp:
             line = self.lines.get(lid)
             pa = line.get_parallel(aid) if line else None
             if pa:
+                pr, pg, pb = hex_to_rgb(pa.color)
+                pcref = col(pr, pg, pb)
+                ppen = gdi32.CreatePen(PS_SOLID, 2, pcref)
+                extra_pens.append(ppen)
                 paint_polyline(
-                    pa.geometry(), gray_pen, gray_br, pa.name, col(85, 85, 85),
+                    pa.geometry(), ppen, gray_br, pa.name, pcref,
                     arrow_at_start=pa.arrow_at_start,
                 )
 
@@ -2819,7 +2920,7 @@ class DiagramApp:
         gdi32.SelectObject(hdc, old_br)
         gdi32.SelectObject(hdc, old_font)
         gdi32.SelectObject(hdc, old_bmp)
-        for obj in (white_br, white_pen, black_pen, dash_pen, gray_pen, black_br, gray_br, font):
+        for obj in (white_br, white_pen, black_pen, dash_pen, gray_pen, black_br, gray_br, font, *extra_pens):
             gdi32.DeleteObject(obj)
         gdi32.DeleteDC(hdc)
         gdi32.DeleteObject(hbmp)
