@@ -7,6 +7,7 @@ Einfacher Diagram-Editor mit Tkinter
 - Rechte Seitenleiste: Attribute bearbeiten (verbergbar)
 - Linien zwischen Rechtecken (mit Namen und Pfeil Richtung Auswahlreihenfolge)
 - Speichern / Laden im JSON-Format
+- Auswahl als PNG-Datei speichern
 
 
 """
@@ -15,10 +16,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog, messagebox, colorchooser
 import json
 import math
+import os
 import uuid
 import sys
-import ctypes
-from ctypes import wintypes
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = ImageDraw = ImageFont = None
 
 # ---------------------------
 # Hilfsfunktionen (Geometrie)
@@ -237,6 +242,81 @@ def hex_to_rgb(color, default=(0, 0, 0)):
         return int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16)
     except ValueError:
         return default
+
+def _png_font_candidates():
+    if sys.platform == "win32":
+        fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        names = ("segoeui.ttf", "arial.ttf")
+        return [os.path.join(fonts, name) for name in names]
+    if sys.platform == "darwin":
+        return [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+        ]
+    return [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+
+def _load_png_font(size):
+    for path in _png_font_candidates():
+        if os.path.isfile(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+def _label_box(font, text, x, y, anchor, scale):
+    left, top, right, bottom = font.getbbox(text)
+    width = (right - left) / scale
+    height = (bottom - top) / scale
+    if anchor == "n":
+        return (x - width / 2.0, y, x + width / 2.0, y + height)
+    return (x - width / 2.0, y - height / 2.0, x + width / 2.0, y + height / 2.0)
+
+def _draw_label(draw, xy, text, font, fill, anchor):
+    if not text:
+        return
+    left, top, right, bottom = font.getbbox(text)
+    width = right - left
+    height = bottom - top
+    x, y = xy
+    if anchor == "n":
+        origin = (x - width / 2.0 - left, y - top)
+    else:
+        origin = (x - width / 2.0 - left, y - height / 2.0 - top)
+    draw.text(origin, text, font=font, fill=fill)
+
+def _dashed_segments(p1, p2, dash):
+    x1, y1 = p1
+    x2, y2 = p2
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length < 1e-6:
+        return []
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length
+    if not dash:
+        return [(p1, p2)]
+    segments = []
+    pos = 0.0
+    ink = True
+    index = 0
+    while pos < length - 0.5:
+        step = dash[index % len(dash)]
+        end = min(length, pos + step)
+        if ink and end - pos >= 0.5:
+            segments.append((
+                (x1 + ux * pos, y1 + uy * pos),
+                (x1 + ux * end, y1 + uy * end),
+            ))
+        ink = not ink
+        pos = end
+        index += 1
+    return segments
 
 def parse_name_offset(data):
     v = data.get("name_offset") if isinstance(data, dict) else None
@@ -1104,9 +1184,9 @@ class DiagramApp:
         self.btn_delete = ttk.Button(self.left_frame, text="Löschen", command=self.delete_selected)
         self.btn_save = ttk.Button(self.left_frame, text="Speichern (JSON)", command=self.save_json)
         self.btn_load = ttk.Button(self.left_frame, text="Laden (JSON)", command=self.load_json)
-        self.btn_copy_image = ttk.Button(self.left_frame, text="Grafik ins Clipboard", command=self.copy_canvas_to_clipboard)
+        self.btn_save_png = ttk.Button(self.left_frame, text="Auswahl als Grafik", command=self.save_selection_png)
 
-        for w in (self.btn_draw_rect, self.btn_draw_line, self.btn_delete, self.btn_copy_image, self.btn_save, self.btn_load):
+        for w in (self.btn_draw_rect, self.btn_draw_line, self.btn_delete, self.btn_save_png, self.btn_save, self.btn_load):
             w.pack(fill=tk.X, padx=8, pady=4)
 
         undo_row = ttk.Frame(self.left_frame)
@@ -1244,29 +1324,52 @@ class DiagramApp:
     # Eventbindung
     # ---------------------------
 
+    def _bind_primary(self, sequence, handler):
+        """Steuerungstaste, auf dem Mac zusätzlich die Befehlstaste."""
+        self.root.bind(f"<Control-{sequence}>", handler)
+        if sys.platform == "darwin":
+            self.root.bind(f"<Command-{sequence}>", handler)
+
     def _bind_events(self):
         c = self.canvas
         c.bind("<ButtonPress-1>", self.on_canvas_button_press)
         c.bind("<B1-Motion>", self.on_canvas_move)
         c.bind("<ButtonRelease-1>", self.on_canvas_release)
         c.bind("<Button-3>", self.on_right_click)
-        c.bind("<MouseWheel>", self._on_mousewheel)
-        c.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        if sys.platform == "darwin":
+            # macOS meldet den Rechtsklick als Maustaste 2.
+            c.bind("<Button-2>", self.on_right_click)
+        if sys.platform.startswith("linux"):
+            c.bind("<Button-4>", self._on_mousewheel)
+            c.bind("<Button-5>", self._on_mousewheel)
+            c.bind("<Shift-Button-4>", self._on_shift_mousewheel)
+            c.bind("<Shift-Button-5>", self._on_shift_mousewheel)
+            c.bind("<Control-Button-4>", self._on_zoom_wheel)
+            c.bind("<Control-Button-5>", self._on_zoom_wheel)
+        else:
+            c.bind("<MouseWheel>", self._on_mousewheel)
+            c.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+            c.bind("<Control-MouseWheel>", self._on_zoom_wheel)
+            if sys.platform == "darwin":
+                c.bind("<Command-MouseWheel>", self._on_zoom_wheel)
         c.bind("<Enter>", lambda e: c.focus_set())
         self.root.bind("<Delete>", lambda e: self.delete_selected())
         self.root.bind("<Escape>", lambda e: self.set_mode("select"))
-        self.root.bind("<Control-plus>", lambda e: self._zoom_by(1.2) or "break")
-        self.root.bind("<Control-equal>", lambda e: self._zoom_by(1.2) or "break")
-        self.root.bind("<Control-minus>", lambda e: self._zoom_by(1 / 1.2) or "break")
-        self.root.bind("<Control-0>", lambda e: self._set_zoom(1.0) or "break")
-        self.root.bind("<Control-KP_Add>", lambda e: self._zoom_by(1.2) or "break")
-        self.root.bind("<Control-KP_Subtract>", lambda e: self._zoom_by(1 / 1.2) or "break")
-        self.root.bind("<Control-z>", self.undo)
-        self.root.bind("<Control-Z>", self.undo)
-        self.root.bind("<Control-y>", self.redo)
-        self.root.bind("<Control-Y>", self.redo)
-        self.root.bind("<Control-Shift-Z>", self.redo)
-        self.root.bind("<Control-Shift-z>", self.redo)
+        zoom_in = lambda e: self._zoom_by(1.2) or "break"
+        zoom_out = lambda e: self._zoom_by(1 / 1.2) or "break"
+        zoom_reset = lambda e: self._set_zoom(1.0) or "break"
+        self._bind_primary("plus", zoom_in)
+        self._bind_primary("equal", zoom_in)
+        self._bind_primary("minus", zoom_out)
+        self._bind_primary("0", zoom_reset)
+        self._bind_primary("KP_Add", zoom_in)
+        self._bind_primary("KP_Subtract", zoom_out)
+        self._bind_primary("z", self.undo)
+        self._bind_primary("Z", self.undo)
+        self._bind_primary("y", self.redo)
+        self._bind_primary("Y", self.redo)
+        self._bind_primary("Shift-Z", self.redo)
+        self._bind_primary("Shift-z", self.redo)
 
     def _diagram_data(self):
         return {
@@ -1452,18 +1555,43 @@ class DiagramApp:
             x1, y1, x2, y2 = 0, 0, cw, ch
         self.canvas.configure(scrollregion=(x1, y1, x2, y2))
 
+    def _wheel_steps(self, event):
+        """Eine Radstufe. Positiv ist nach oben bzw. nach rechts."""
+        number = getattr(event, "num", None)
+        if number == 4:
+            return 1
+        if number == 5:
+            return -1
+        delta = getattr(event, "delta", 0) or 0
+        if not delta:
+            return 0
+        if abs(delta) < 120:
+            return 1 if delta > 0 else -1
+        steps = int(delta / 120)
+        return steps or (1 if delta > 0 else -1)
+
     def _on_mousewheel(self, event):
-        if event.state & 0x0004:
-            self._zoom_by(1.1 if event.delta > 0 else 1 / 1.1, event.x, event.y)
-            return "break"
-        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        steps = self._wheel_steps(event)
+        if steps:
+            self.canvas.yview_scroll(-steps, "units")
         return "break"
 
     def _on_shift_mousewheel(self, event):
-        self.canvas.xview_scroll(int(-event.delta / 120), "units")
+        steps = self._wheel_steps(event)
+        if steps:
+            self.canvas.xview_scroll(-steps, "units")
+        return "break"
+
+    def _on_zoom_wheel(self, event):
+        steps = self._wheel_steps(event)
+        if steps:
+            self._zoom_by(1.1 ** steps, event.x, event.y)
         return "break"
 
     def on_canvas_button_press(self, event):
+        if sys.platform == "darwin" and (event.state & 0x0004):
+            self.on_right_click(event)
+            return
         x, y = self._canvas_xy(event)
         self.drag_start = (x, y)
 
@@ -1712,7 +1840,7 @@ class DiagramApp:
         menu.add_command(label="Block", command=lambda: self.toggle_mode("draw_block"))
         menu.add_command(label="Verbindung", command=lambda: self.toggle_mode("draw_verbindung"))
         menu.add_separator()
-        menu.add_command(label="Grafik ins Clipboard", command=self.copy_canvas_to_clipboard)
+        menu.add_command(label="Grafik als PNG speichern", command=self.save_selection_png)
         menu.post(event.x_root, event.y_root)
 
     # ---------------------------
@@ -2617,20 +2745,186 @@ class DiagramApp:
         self.marquee_id = None
         self._update_scrollregion()
 
-    def copy_canvas_to_clipboard(self):
-        """Ausgewählte Objekte als Bild in die Windows-Zwischenablage legen."""
-        if sys.platform != "win32":
-            messagebox.showerror("Zwischenablage", "Das Kopieren als Bild ist derzeit nur unter Windows verfügbar.")
+    def save_selection_png(self):
+        """Auswahl als PNG-Datei speichern."""
+        if Image is None:
+            messagebox.showerror(
+                "PNG",
+                "Zum Speichern als PNG wird das Paket Pillow benötigt.\n\n"
+                "Installation: py -3 -m pip install pillow",
+            )
             return
         if not self.selection:
-            messagebox.showinfo("Als Bild kopieren", "Bitte zuerst Objekte mit der Maus auswählen.")
+            messagebox.showinfo("Grafik als PNG", "Bitte zuerst Objekte mit der Maus auswählen.")
             return
         try:
-            self._copy_selection_bitmap_windows()
+            image, scale = self._render_selection_png()
         except Exception as e:
-            messagebox.showerror("Zwischenablage", f"Kopieren fehlgeschlagen: {e}")
+            messagebox.showerror("PNG", f"Bild konnte nicht erzeugt werden: {e}")
+            return
+        file = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png"), ("All files", "*.*")],
+        )
+        if not file:
+            return
+        try:
+            image.save(file, format="PNG", dpi=(96 * scale, 96 * scale))
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Speichern fehlgeschlagen: {e}")
+            return
+        messagebox.showinfo("Gespeichert", f"In {file} gespeichert.")
 
-    def _clipboard_export_set(self):
+    def _render_selection_png(self):
+        rect_ids, line_ids, parrow_ids, iface_ids = self._export_selection()
+        box = self._export_bbox(rect_ids, line_ids, parrow_ids, iface_ids)
+        if not box:
+            raise RuntimeError("Keine Zeichenobjekte in der Auswahl.")
+
+        margin = 16.0
+        geom_w = max(1.0, box[2] - box[0] + 2 * margin)
+        geom_h = max(1.0, box[3] - box[1] + 2 * margin)
+        scale = 2
+        if geom_w * scale > 12000 or geom_h * scale > 12000:
+            scale = max(1, int(min(12000 / geom_w, 12000 / geom_h)))
+        font = _load_png_font(12 * scale)
+        stroke = max(1, int(round(2 * scale)))
+        dash = (8 * scale, 4 * scale)
+
+        def add_label(labels, x, y, text, anchor):
+            if text:
+                labels.append((x, y, text, anchor))
+
+        def chevron(points, at_start):
+            pair = arrow_shaft_pair(points, at_start)
+            if not pair:
+                return None
+            return open_arrow_points(pair[0], pair[1])
+
+        labels = []
+        for rid in rect_ids:
+            rect = self.rects[rid]
+            add_label(labels, *rect.name_pos(), rect.name, "n")
+        for iid in iface_ids:
+            iface = self.ifaces.get(iid)
+            if iface:
+                add_label(labels, *iface.name_pos(), iface.name, "c")
+        for lid in line_ids:
+            line = self.lines[lid]
+            add_label(labels, *line.name_pos(), line.name, "c")
+            for pa in line.parallel_arrows:
+                add_label(labels, *pa.name_pos(), pa.name, "c")
+        for lid, aid in parrow_ids:
+            if lid in line_ids:
+                continue
+            line = self.lines.get(lid)
+            pa = line.get_parallel(aid) if line else None
+            if pa:
+                add_label(labels, *pa.name_pos(), pa.name, "c")
+
+        boxes = [box]
+        for x, y, text, anchor in labels:
+            boxes.append(_label_box(font, text, x, y, anchor, scale))
+        for lid in line_ids:
+            line = self.lines[lid]
+            head = chevron(line.polyline_points(), line.arrow_at_start)
+            if head:
+                boxes.append(points_bbox(head))
+            for pa in line.parallel_arrows:
+                head = chevron(pa.geometry(), pa.arrow_at_start)
+                if head:
+                    boxes.append(points_bbox(head))
+        for lid, aid in parrow_ids:
+            if lid in line_ids:
+                continue
+            line = self.lines.get(lid)
+            pa = line.get_parallel(aid) if line else None
+            head = chevron(pa.geometry() if pa else None, pa.arrow_at_start if pa else None)
+            if head:
+                boxes.append(points_bbox(head))
+
+        x0 = min(b[0] for b in boxes) - margin
+        y0 = min(b[1] for b in boxes) - margin
+        x1 = max(b[2] for b in boxes) + margin
+        y1 = max(b[3] for b in boxes) + margin
+        width = max(1, int(math.ceil((x1 - x0) * scale)))
+        height = max(1, int(math.ceil((y1 - y0) * scale)))
+        image = Image.new("RGB", (width, height), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+
+        def P(x, y):
+            return ((x - x0) * scale, (y - y0) * scale)
+
+        def paint_polyline(points, color, text, text_xy, at_start):
+            if not points or len(points) < 2:
+                return
+            draw.line([P(*p) for p in points], fill=color, width=stroke, joint="curve")
+            head = chevron(points, at_start)
+            if head:
+                draw.line([P(*p) for p in head], fill=color, width=stroke, joint="curve")
+            if text:
+                _draw_label(draw, P(*text_xy), text, font, color, "c")
+
+        for rid in rect_ids:
+            rect = self.rects[rid]
+            color = hex_to_rgb(rect.color)
+            rx1, ry1, rx2, ry2 = rect.bbox
+            corners = (P(rx1, ry1), P(rx2, ry1), P(rx2, ry2), P(rx1, ry2))
+            if rect.dashed:
+                edges = (
+                    (corners[0], corners[1]),
+                    (corners[1], corners[2]),
+                    (corners[2], corners[3]),
+                    (corners[3], corners[0]),
+                )
+                for start, end in edges:
+                    for seg in _dashed_segments(start, end, dash):
+                        draw.line(seg, fill=color, width=stroke)
+            else:
+                draw.rectangle([corners[0], corners[2]], outline=color, width=stroke)
+            if rect.name:
+                _draw_label(draw, P(*rect.name_pos()), rect.name, font, color, "n")
+
+        for lid in line_ids:
+            line = self.lines[lid]
+            color = hex_to_rgb(line.color)
+            paint_polyline(
+                line.polyline_points(), color, line.name, line.name_pos(), line.arrow_at_start,
+            )
+            for pa in line.parallel_arrows:
+                paint_polyline(
+                    pa.geometry(), hex_to_rgb(pa.color), pa.name, pa.name_pos(), pa.arrow_at_start,
+                )
+        for lid, aid in parrow_ids:
+            if lid in line_ids:
+                continue
+            line = self.lines.get(lid)
+            pa = line.get_parallel(aid) if line else None
+            if pa:
+                paint_polyline(
+                    pa.geometry(), hex_to_rgb(pa.color), pa.name, pa.name_pos(), pa.arrow_at_start,
+                )
+
+        for iid in iface_ids:
+            iface = self.ifaces.get(iid)
+            if not iface:
+                continue
+            color = hex_to_rgb(iface.color)
+            ax, ay = iface.attach_point()
+            sx, sy = iface.stem_end()
+            cx, cy = iface.circle_center()
+            rad = iface.RADIUS
+            draw.line([P(ax, ay), P(sx, sy)], fill=color, width=stroke)
+            draw.ellipse(
+                [P(cx - rad, cy - rad), P(cx + rad, cy + rad)],
+                outline=color, width=stroke,
+            )
+            if iface.name:
+                _draw_label(draw, P(*iface.name_pos()), iface.name, font, color, "c")
+
+        return image, scale
+
+    def _export_selection(self):
         rect_ids = set()
         line_ids = set()
         parrow_ids = set()
@@ -2657,7 +2951,7 @@ class DiagramApp:
                     iface_ids.add(iface.id)
         return rect_ids, line_ids, parrow_ids, iface_ids
 
-    def _clipboard_export_bbox(self, rect_ids, line_ids, parrow_ids, iface_ids):
+    def _export_bbox(self, rect_ids, line_ids, parrow_ids, iface_ids):
         boxes = []
         for rid in rect_ids:
             boxes.append(self.rects[rid].bbox)
@@ -2687,275 +2981,6 @@ class DiagramApp:
             max(b[2] for b in boxes),
             max(b[3] for b in boxes),
         )
-
-    def _copy_selection_bitmap_windows(self):
-        user32 = ctypes.windll.user32
-        gdi32 = ctypes.windll.gdi32
-        kernel32 = ctypes.windll.kernel32
-
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-        class BITMAPINFOHEADER(ctypes.Structure):
-            _fields_ = [
-                ("biSize", ctypes.c_uint32),
-                ("biWidth", ctypes.c_int32),
-                ("biHeight", ctypes.c_int32),
-                ("biPlanes", ctypes.c_uint16),
-                ("biBitCount", ctypes.c_uint16),
-                ("biCompression", ctypes.c_uint32),
-                ("biSizeImage", ctypes.c_uint32),
-                ("biXPelsPerMeter", ctypes.c_int32),
-                ("biYPelsPerMeter", ctypes.c_int32),
-                ("biClrUsed", ctypes.c_uint32),
-                ("biClrImportant", ctypes.c_uint32),
-            ]
-
-        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
-        gdi32.CreateCompatibleDC.restype = wintypes.HDC
-        gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
-        gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
-        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
-        gdi32.SelectObject.restype = wintypes.HGDIOBJ
-        gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
-        gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
-        gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wintypes.COLORREF]
-        gdi32.CreatePen.restype = wintypes.HPEN
-        gdi32.Rectangle.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-        gdi32.Ellipse.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-        gdi32.Polyline.argtypes = [wintypes.HDC, ctypes.c_void_p, ctypes.c_int]
-        gdi32.Polygon.argtypes = [wintypes.HDC, ctypes.c_void_p, ctypes.c_int]
-        gdi32.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
-        gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
-        gdi32.SetTextAlign.argtypes = [wintypes.HDC, ctypes.c_uint]
-        gdi32.TextOutW.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.LPCWSTR, ctypes.c_int]
-        gdi32.CreateFontW.restype = wintypes.HFONT
-        gdi32.GetDIBits.argtypes = [
-            wintypes.HDC, wintypes.HBITMAP, ctypes.c_uint, ctypes.c_uint,
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint
-        ]
-        gdi32.DeleteDC.argtypes = [wintypes.HDC]
-        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
-        gdi32.GetStockObject.argtypes = [ctypes.c_int]
-        gdi32.GetStockObject.restype = wintypes.HGDIOBJ
-        user32.GetDC.argtypes = [wintypes.HWND]
-        user32.GetDC.restype = wintypes.HDC
-        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-        user32.OpenClipboard.argtypes = [wintypes.HWND]
-        user32.OpenClipboard.restype = wintypes.BOOL
-        user32.EmptyClipboard.restype = wintypes.BOOL
-        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        user32.SetClipboardData.restype = wintypes.HANDLE
-        user32.CloseClipboard.restype = wintypes.BOOL
-        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-        kernel32.GlobalAlloc.restype = wintypes.HANDLE
-        kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
-        kernel32.GlobalLock.restype = ctypes.c_void_p
-        kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
-        kernel32.GlobalFree.argtypes = [wintypes.HANDLE]
-
-        rect_ids, line_ids, parrow_ids, iface_ids = self._clipboard_export_set()
-        box = self._clipboard_export_bbox(rect_ids, line_ids, parrow_ids, iface_ids)
-        if not box:
-            raise RuntimeError("Keine Zeichenobjekte in der Auswahl.")
-
-        pad = 16
-        origin_x, origin_y = box[0] - pad, box[1] - pad
-        width = max(1, int(math.ceil(box[2] - box[0] + 2 * pad)))
-        height = max(1, int(math.ceil(box[3] - box[1] + 2 * pad)))
-
-        def mx(x):
-            return int(round(x - origin_x))
-
-        def my(y):
-            return int(round(y - origin_y))
-
-        def col(r, g, b):
-            return r | (g << 8) | (b << 16)
-
-        def draw_poly(hdc, points, closed=False):
-            n = len(points)
-            arr = (POINT * n)(*[POINT(mx(p[0]), my(p[1])) for p in points])
-            if closed:
-                gdi32.Polygon(hdc, ctypes.byref(arr), n)
-            else:
-                gdi32.Polyline(hdc, ctypes.byref(arr), n)
-
-        def draw_arrow_head(hdc, p_from, p_to, size=11):
-            pts = open_arrow_points(p_from, p_to, size=size)
-            if pts:
-                draw_poly(hdc, pts, closed=False)
-
-        PS_SOLID = 0
-        PS_DASH = 1
-        NULL_BRUSH = 5
-        TRANSPARENT = 1
-        TA_CENTER = 6
-        TA_TOP = 0
-        CF_DIB = 8
-        GMEM_MOVEABLE = 0x0002
-
-        hdc_screen = user32.GetDC(None)
-        hdc = gdi32.CreateCompatibleDC(hdc_screen)
-        hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
-        if not hdc or not hbmp:
-            if hdc:
-                gdi32.DeleteDC(hdc)
-            if hbmp:
-                gdi32.DeleteObject(hbmp)
-            user32.ReleaseDC(None, hdc_screen)
-            raise RuntimeError("Bitmap konnte nicht erzeugt werden.")
-        old_bmp = gdi32.SelectObject(hdc, hbmp)
-
-        white_br = gdi32.CreateSolidBrush(col(255, 255, 255))
-        white_pen = gdi32.CreatePen(PS_SOLID, 1, col(255, 255, 255))
-        black_pen = gdi32.CreatePen(PS_SOLID, 2, col(0, 0, 0))
-        dash_pen = gdi32.CreatePen(PS_DASH, 1, col(0, 0, 0))
-        gray_pen = gdi32.CreatePen(PS_SOLID, 2, col(85, 85, 85))
-        black_br = gdi32.CreateSolidBrush(col(0, 0, 0))
-        gray_br = gdi32.CreateSolidBrush(col(85, 85, 85))
-        font = gdi32.CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, "Segoe UI")
-        old_font = gdi32.SelectObject(hdc, font)
-        old_pen = gdi32.SelectObject(hdc, white_pen)
-        old_br = gdi32.SelectObject(hdc, white_br)
-        gdi32.SetBkMode(hdc, TRANSPARENT)
-        gdi32.SetTextColor(hdc, col(0, 0, 0))
-        gdi32.SetTextAlign(hdc, TA_CENTER | TA_TOP)
-        gdi32.Rectangle(hdc, 0, 0, width, height)
-
-        extra_pens = []
-
-        def stroke_pen(hex_color, dashed=False):
-            r, g, b = hex_to_rgb(hex_color)
-            cref = col(r, g, b)
-            pen = gdi32.CreatePen(PS_DASH if dashed else PS_SOLID, 1 if dashed else 2, cref)
-            extra_pens.append(pen)
-            gdi32.SelectObject(hdc, pen)
-            gdi32.SetTextColor(hdc, cref)
-            return cref
-
-        null_br = gdi32.GetStockObject(NULL_BRUSH)
-        gdi32.SelectObject(hdc, null_br)
-        for rid in rect_ids:
-            r = self.rects[rid]
-            x1, y1, x2, y2 = r.bbox
-            stroke_pen(r.color, r.dashed)
-            gdi32.Rectangle(hdc, mx(x1), my(y1), mx(x2) + 1, my(y2) + 1)
-            name = r.name or ""
-            if name:
-                gdi32.TextOutW(hdc, mx((x1 + x2) / 2), my(y1) + 4, name, len(name))
-
-        gdi32.SelectObject(hdc, null_br)
-        for iid in iface_ids:
-            iface = self.ifaces.get(iid)
-            if not iface:
-                continue
-            ax, ay = iface.attach_point()
-            sx, sy = iface.stem_end()
-            cx, cy = iface.circle_center()
-            rad = iface.RADIUS
-            stroke_pen(iface.color)
-            draw_poly(hdc, ((ax, ay), (sx, sy)), closed=False)
-            gdi32.Ellipse(hdc, mx(cx - rad), my(cy - rad), mx(cx + rad) + 1, my(cy + rad) + 1)
-            name = iface.name or ""
-            if name:
-                gdi32.TextOutW(hdc, mx(cx), my(cy - rad) - 16, name, len(name))
-
-        def paint_polyline(points, pen, brush, text, text_color, arrow_at_start=False):
-            if not points or len(points) < 2:
-                return
-            gdi32.SelectObject(hdc, pen)
-            draw_poly(hdc, points, closed=False)
-            if arrow_at_start is None:
-                pass
-            elif arrow_at_start:
-                draw_arrow_head(hdc, points[1], points[0])
-            else:
-                draw_arrow_head(hdc, points[-2], points[-1])
-            if text:
-                gdi32.SetTextColor(hdc, text_color)
-                if len(points) >= 3:
-                    tx, ty = points[1]
-                else:
-                    tx = (points[0][0] + points[-1][0]) / 2
-                    ty = (points[0][1] + points[-1][1]) / 2
-                gdi32.TextOutW(hdc, mx(tx), my(ty) - 14, text, len(text))
-                gdi32.SetTextColor(hdc, col(0, 0, 0))
-
-        for lid in line_ids:
-            line = self.lines[lid]
-            r, g, b = hex_to_rgb(line.color)
-            cref = col(r, g, b)
-            lpen = gdi32.CreatePen(PS_SOLID, 2, cref)
-            extra_pens.append(lpen)
-            paint_polyline(
-                line.polyline_points(), lpen, black_br, line.name, cref,
-                arrow_at_start=line.arrow_at_start,
-            )
-            for pa in line.parallel_arrows:
-                pr, pg, pb = hex_to_rgb(pa.color)
-                pcref = col(pr, pg, pb)
-                ppen = gdi32.CreatePen(PS_SOLID, 2, pcref)
-                extra_pens.append(ppen)
-                paint_polyline(
-                    pa.geometry(), ppen, gray_br, pa.name, pcref,
-                    arrow_at_start=pa.arrow_at_start,
-                )
-        for lid, aid in parrow_ids:
-            if lid in line_ids:
-                continue
-            line = self.lines.get(lid)
-            pa = line.get_parallel(aid) if line else None
-            if pa:
-                pr, pg, pb = hex_to_rgb(pa.color)
-                pcref = col(pr, pg, pb)
-                ppen = gdi32.CreatePen(PS_SOLID, 2, pcref)
-                extra_pens.append(ppen)
-                paint_polyline(
-                    pa.geometry(), ppen, gray_br, pa.name, pcref,
-                    arrow_at_start=pa.arrow_at_start,
-                )
-
-        header = BITMAPINFOHEADER()
-        header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        header.biWidth = width
-        header.biHeight = height
-        header.biPlanes = 1
-        header.biBitCount = 32
-        header.biCompression = 0
-        stride = ((width * 32 + 31) // 32) * 4
-        buf = (ctypes.c_byte * (stride * height))()
-        got = gdi32.GetDIBits(hdc, hbmp, 0, height, buf, ctypes.byref(header), 0)
-
-        gdi32.SelectObject(hdc, old_pen)
-        gdi32.SelectObject(hdc, old_br)
-        gdi32.SelectObject(hdc, old_font)
-        gdi32.SelectObject(hdc, old_bmp)
-        for obj in (white_br, white_pen, black_pen, dash_pen, gray_pen, black_br, gray_br, font, *extra_pens):
-            gdi32.DeleteObject(obj)
-        gdi32.DeleteDC(hdc)
-        gdi32.DeleteObject(hbmp)
-        user32.ReleaseDC(None, hdc_screen)
-        if not got:
-            raise RuntimeError("Pixeldaten konnten nicht gelesen werden.")
-
-        dib = bytes(header) + bytes(buf)
-        hglob = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib))
-        if not hglob:
-            raise RuntimeError("Speicher für Zwischenablage fehlt.")
-        ptr = kernel32.GlobalLock(hglob)
-        ctypes.memmove(ptr, dib, len(dib))
-        kernel32.GlobalUnlock(hglob)
-        if not user32.OpenClipboard(wintypes.HWND(int(self.root.winfo_id()))):
-            kernel32.GlobalFree(hglob)
-            raise RuntimeError("Zwischenablage ist belegt.")
-        try:
-            user32.EmptyClipboard()
-            if not user32.SetClipboardData(CF_DIB, hglob):
-                kernel32.GlobalFree(hglob)
-                raise RuntimeError("SetClipboardData fehlgeschlagen.")
-        finally:
-            user32.CloseClipboard()
 
     def toggle_sidebar(self):
         if self.attr_visible:
