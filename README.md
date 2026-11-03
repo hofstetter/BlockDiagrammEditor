@@ -13,7 +13,7 @@ cd BlockDiagrammEditor
 py -3 BlockDiagrammEditor.py
 ```
 
-Beispieldateien zum Laden: `test.json`, `Test1.json`, `test2.json`.
+Beispieldatei zum Laden: `Diagramm1.json`.
 
 ## Als einzelnes Windows-Programm bauen
 

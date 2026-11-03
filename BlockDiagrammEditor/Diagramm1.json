@@ -3,12 +3,12 @@
     {
       "id": "04ad922e-b978-4870-b960-821908bb724b",
       "bbox": [
-        128.0,
-        21.0,
-        288.0,
-        122.0
+        124.0,
+        19.0,
+        284.0,
+        120.0
       ],
-      "name": "B-001",
+      "name": "Block 1",
       "name_offset": [
         0.0,
         0.0
@@ -20,12 +20,12 @@
     {
       "id": "7d8936f9-964f-4a22-94cc-49d7d160164c",
       "bbox": [
-        397.0,
-        287.0,
-        556.0,
-        457.0
+        392.0,
+        329.0,
+        551.0,
+        499.0
       ],
-      "name": "B-002",
+      "name": "Block 3",
       "name_offset": [
         0.0,
         0.0
@@ -37,12 +37,12 @@
     {
       "id": "2c7ffa3a-3f06-4323-9fbe-16c4f2616102",
       "bbox": [
-        164.0,
-        345.0,
-        330.0,
-        471.0
+        159.0,
+        387.0,
+        325.0,
+        513.0
       ],
-      "name": "B-003",
+      "name": "Block 2",
       "name_offset": [
         0.0,
         0.0
@@ -54,25 +54,25 @@
     {
       "id": "5dbb6c23-67a3-44c0-b9e9-794dfc68ff74",
       "bbox": [
-        75.0,
-        261.0,
-        598.0,
-        504.0
+        70.0,
+        303.0,
+        593.0,
+        546.0
       ],
       "name": "B-004",
       "name_offset": [
         0.0,
         0.0
       ],
-      "color": "#00ffff",
+      "color": "#ff0000",
       "dashed": true,
       "interfaces": [
         {
           "id": "a9b01e1e-015e-4153-acda-9e06e0a13c56",
-          "name": "I-001",
+          "name": "Interface 1",
           "name_offset": [
-            -18.0,
-            1.0
+            -41.0,
+            -2.0
           ],
           "color": "#000000",
           "side": "n",
@@ -87,19 +87,19 @@
       "source": "04ad922e-b978-4870-b960-821908bb724b",
       "target": "7d8936f9-964f-4a22-94cc-49d7d160164c",
       "target_kind": "block",
-      "name": "V-001",
+      "name": "Update",
       "name_offset": [
-        0.0,
-        0.0
+        14.0,
+        20.0
       ],
       "color": "#000000",
       "arrow_at_start": false,
       "parallel_arrows": [
         {
           "id": "f94088a0-7785-44c6-87fb-5a5ae0af171a",
-          "offset": 32,
+          "offset": 41,
           "length_ratio": 0.38,
-          "name": "D-001",
+          "name": "Grunddaten",
           "name_offset": [
             0.0,
             0.0
@@ -109,12 +109,12 @@
         },
         {
           "id": "0eaa98dc-1f4a-4fe5-87d1-c3ff0505cf8c",
-          "offset": -30,
+          "offset": -38,
           "length_ratio": 0.38,
-          "name": "D-002",
+          "name": "Personendaten",
           "name_offset": [
-            0.0,
-            0.0
+            43.0,
+            35.0
           ],
           "color": "#555555",
           "arrow_at_start": false
@@ -126,10 +126,10 @@
       "source": "04ad922e-b978-4870-b960-821908bb724b",
       "target": "2c7ffa3a-3f06-4323-9fbe-16c4f2616102",
       "target_kind": "block",
-      "name": "V-002",
+      "name": "Abfragen",
       "name_offset": [
-        0.0,
-        0.0
+        -4.0,
+        11.0
       ],
       "color": "#000000",
       "arrow_at_start": false,
@@ -161,6 +161,20 @@
           "arrow_at_start": true
         }
       ]
+    },
+    {
+      "id": "153b0d00-88a1-4b5d-bef5-2cbb3044430d",
+      "source": "2c7ffa3a-3f06-4323-9fbe-16c4f2616102",
+      "target": "7d8936f9-964f-4a22-94cc-49d7d160164c",
+      "target_kind": "block",
+      "name": "V-004",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "arrow_at_start": true,
+      "parallel_arrows": []
     }
   ]
 }

@@ -10,7 +10,7 @@ Voraussetzung: Python 3.11 oder neuer, installiert vom [python.org-Installer](ht
 py -3 BlockDiagrammEditor.py
 ```
 
-Beispieldateien zum Laden: `test.json`, `Test1.json`, `test2.json`.
+Beispieldatei zum Laden: `Diagramm1.json`.
 
 ## Als einzelnes Windows-Programm bauen
 
