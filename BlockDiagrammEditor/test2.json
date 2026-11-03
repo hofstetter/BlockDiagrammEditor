@@ -1,0 +1,166 @@
+{
+  "blocks": [
+    {
+      "id": "04ad922e-b978-4870-b960-821908bb724b",
+      "bbox": [
+        128.0,
+        21.0,
+        288.0,
+        122.0
+      ],
+      "name": "B-001",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "dashed": false,
+      "interfaces": []
+    },
+    {
+      "id": "7d8936f9-964f-4a22-94cc-49d7d160164c",
+      "bbox": [
+        397.0,
+        287.0,
+        556.0,
+        457.0
+      ],
+      "name": "B-002",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "dashed": false,
+      "interfaces": []
+    },
+    {
+      "id": "2c7ffa3a-3f06-4323-9fbe-16c4f2616102",
+      "bbox": [
+        164.0,
+        345.0,
+        330.0,
+        471.0
+      ],
+      "name": "B-003",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "dashed": false,
+      "interfaces": []
+    },
+    {
+      "id": "5dbb6c23-67a3-44c0-b9e9-794dfc68ff74",
+      "bbox": [
+        75.0,
+        261.0,
+        598.0,
+        504.0
+      ],
+      "name": "B-004",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#00ffff",
+      "dashed": true,
+      "interfaces": [
+        {
+          "id": "a9b01e1e-015e-4153-acda-9e06e0a13c56",
+          "name": "I-001",
+          "name_offset": [
+            -18.0,
+            1.0
+          ],
+          "color": "#000000",
+          "side": "n",
+          "t": 0.08
+        }
+      ]
+    }
+  ],
+  "verbindungen": [
+    {
+      "id": "ab1a7e18-f1cc-46f1-bf4a-a383848e6bf9",
+      "source": "04ad922e-b978-4870-b960-821908bb724b",
+      "target": "7d8936f9-964f-4a22-94cc-49d7d160164c",
+      "target_kind": "block",
+      "name": "V-001",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "arrow_at_start": false,
+      "parallel_arrows": [
+        {
+          "id": "f94088a0-7785-44c6-87fb-5a5ae0af171a",
+          "offset": 32,
+          "length_ratio": 0.38,
+          "name": "D-001",
+          "name_offset": [
+            0.0,
+            0.0
+          ],
+          "color": "#555555",
+          "arrow_at_start": false
+        },
+        {
+          "id": "0eaa98dc-1f4a-4fe5-87d1-c3ff0505cf8c",
+          "offset": -30,
+          "length_ratio": 0.38,
+          "name": "D-002",
+          "name_offset": [
+            0.0,
+            0.0
+          ],
+          "color": "#555555",
+          "arrow_at_start": false
+        }
+      ]
+    },
+    {
+      "id": "b3e356bc-598f-4b98-b182-07b260bcd56f",
+      "source": "04ad922e-b978-4870-b960-821908bb724b",
+      "target": "2c7ffa3a-3f06-4323-9fbe-16c4f2616102",
+      "target_kind": "block",
+      "name": "V-002",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "arrow_at_start": false,
+      "parallel_arrows": []
+    },
+    {
+      "id": "b50be57b-f1c4-43dc-84c1-55273dbc3447",
+      "source": "04ad922e-b978-4870-b960-821908bb724b",
+      "target": "a9b01e1e-015e-4153-acda-9e06e0a13c56",
+      "target_kind": "iface",
+      "name": "V-003",
+      "name_offset": [
+        0.0,
+        0.0
+      ],
+      "color": "#000000",
+      "arrow_at_start": false,
+      "parallel_arrows": [
+        {
+          "id": "bf77a444-c3c4-4361-aa71-09238111545a",
+          "offset": 30,
+          "length_ratio": 0.38,
+          "name": "Referenzen",
+          "name_offset": [
+            -15.0,
+            -2.0
+          ],
+          "color": "#555555",
+          "arrow_at_start": true
+        }
+      ]
+    }
+  ]
+}
