@@ -282,8 +282,24 @@ def open_arrow_points(p_from, p_to, size=ARROW_HEAD_SIZE, spread=ARROW_HEAD_SPRE
     w2 = (p_to[0] + size * math.cos(back - spread), p_to[1] + size * math.sin(back - spread))
     return (w1, p_to, w2)
 
+def arrow_end_state(value):
+    """True = Spitze am Anfang, False = am Ende, None = keine Spitze."""
+    if value is None:
+        return None
+    return bool(value)
+
+def arrow_end_label(at_start):
+    if at_start is None:
+        return "keine"
+    return "Anfang" if at_start else "Ende"
+
+def arrow_end_from_label(label):
+    if label == "keine":
+        return None
+    return label == "Anfang"
+
 def arrow_shaft_pair(points, at_start):
-    if not points or len(points) < 2:
+    if at_start is None or not points or len(points) < 2:
         return None
     if at_start:
         return points[1], points[0]
@@ -696,7 +712,7 @@ class ParallelArrow:
         self.name = name if name is not None else line.app.next_object_name("D")
         self.name_offset = tuple(name_offset) if name_offset else (0.0, 0.0)
         self.color = parse_color(color, "#555555")
-        self.arrow_at_start = bool(arrow_at_start)
+        self.arrow_at_start = arrow_end_state(arrow_at_start)
         self.canvas_line = None
         self.canvas_arrow = None
         self.canvas_text = None
@@ -810,7 +826,7 @@ class LineObj:
         self.color = parse_color(color)
         self.line_offset = 0
         self.waypoint = tuple(waypoint) if waypoint else None
-        self.arrow_at_start = bool(arrow_at_start)
+        self.arrow_at_start = arrow_end_state(arrow_at_start)
         self.parallel_arrows = []
         # canvas items
         self.canvas_line = None
@@ -1200,7 +1216,7 @@ class DiagramApp:
         self.attr_arrow_var = tk.StringVar(value="Ende")
         self.attr_arrow_combo = ttk.Combobox(
             self.attr_container, textvariable=self.attr_arrow_var,
-            values=("Ende", "Anfang"), state="readonly", width=12
+            values=("Ende", "Anfang", "keine"), state="readonly", width=12
         )
         self.attr_arrow_combo.grid(row=6, column=1, sticky="ew")
         self.attr_arrow_combo.bind("<<ComboboxSelected>>", lambda e: self._on_arrow_changed())
@@ -2110,7 +2126,7 @@ class DiagramApp:
             visible = enabled
         self._syncing_attrs = True
         try:
-            self.attr_arrow_var.set("Anfang" if arrow_at_start else "Ende")
+            self.attr_arrow_var.set(arrow_end_label(arrow_at_start))
             if visible:
                 self.attr_arrow_label.grid()
                 self.attr_arrow_combo.grid()
@@ -2366,7 +2382,7 @@ class DiagramApp:
         if not self.selected_obj:
             return
         typ = self.selected_obj[0]
-        at_start = self.attr_arrow_var.get() == "Anfang"
+        at_start = arrow_end_from_label(self.attr_arrow_var.get())
         if typ == "verbindung":
             line = self.lines.get(self.selected_obj[1])
             if not line:
@@ -2850,7 +2866,9 @@ class DiagramApp:
                 return
             gdi32.SelectObject(hdc, pen)
             draw_poly(hdc, points, closed=False)
-            if arrow_at_start:
+            if arrow_at_start is None:
+                pass
+            elif arrow_at_start:
                 draw_arrow_head(hdc, points[1], points[0])
             else:
                 draw_arrow_head(hdc, points[-2], points[-1])
