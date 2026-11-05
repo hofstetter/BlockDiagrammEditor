@@ -2,12 +2,29 @@
 
 Einfacher Block-Diagramm-Editor:
 
-- Blöcke zeichnen und gerichtet verbinden. 
-- Datenflüsse mit Richtung an Verbindungen andocken und mitbewegen.
-- Blöcke innerhalb Blöcken darstellen und bewegen. 
-- Interface anbinden.
-- Resultat in als JSON-File speichern und zurücklesen. 
-- Ausgabe der Grafik als Grafik (png)-File) für Import in andere Programme. 
+Rechts: **Attribute** (Ausblendbar), hier können unterschiedliche Atribute eines ausgewählten Objektes verändert werden. Insb. können dort die Namen der Objekte angepasst werden.
+Links: **Menü**:
+
+- **Block**: einen Block zeichnen und Attribute setzen.
+  Bestehende Blöcke können per Mausdruck ausgewählt und dann verändert werden (Attribute, Löschen, Verschieben).
+
+  Blöcke können innerhalb eines anderen Blockes gezeichnet oder dorthin verschoben werden. Alle Objekte die vollständig innerhalb eines Blockes sind, werden mit diesem mitverschoben.
+
+- **Verbindung**: Gerichtete Verbindung zeichnen: Linke Maustaste innerhalb Quell-Block drücken, gedrückt bis zum 2. Block ziehen und loslassen. In den Attributen Verbindungsrichtung und Farbe wählen.
+  Bei einer ausgewählten Verbindung  kann im Attribut-Fenster einer oder mehrere **Datenflüsse** an die Verbindung angedockt werden. Durch simples ziehen kann die Distanz zur Verbindung eingestellt werden. Weiter können Farbe und Pfeilrichtung eingestellt
+
+- Bei einem Block können via Attribute **Interfaces** zugeordnet werden, die von einem anderen Block her per Verbindung verbunden werden können. 
+
+- **Löschen**: Mehrere Objekte mit der Maus  auswählen (Lasso) und dann löschen.
+
+- Auswahl als Grafik: Zeichnungsobjekte als **Grafik-Datei speichern**. Mehrere Objekte können können mit der Maus ausgewählt werden (Lasso) und als Grafik in ein png-File exportiert werden, welches in andere Applikation importiert werden kann.
+
+-  **Speichen/Laden**: Aktuellen Stand als JSON-File speichern oder ein bestehendes File laden. 
+
+- **Undo/Redo**
+
+- **Zoom**-Grad im Menüeinstellbar. Allenfalls mittels  Scrollbars anzuzeigenden Bereich wählen.
+
 
 
 Das Skript läuft unter Windows, macOS und Linux mit Python, Tkinter und Pillow.
