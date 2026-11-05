@@ -40,7 +40,11 @@ Beispieldatei zum Laden: `Diagramm1.json`.
 
 Bemerkung: 
 
-- Mit entsprechenden Werkzeugen kann z.B. auf einem Windows-System auch entsprechendes **EXE-File** erzeugt werden.
+- Unter Windows erzeugt `build.ps1` eine EXE in `dist/`. Sie wird nicht ins Repository eingecheckt.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
 
 - **Sicherheit**: Das Programm wurde in einer ersten Phase mit "Gemini" und dann mit "Cursor" weiter entwickelt. Es hat eine Sicherheitsüberprüfung des Code mittels "Cursor" stattgefunden. Es wurden keine kritischen Aspekte gefunden. Das hängt auch zusammen, dass das Programm relativ simpel ist: Tastatur- und Mauseingabe, Ausgabe auf den Bildschirm. Lesen und Speichern von Files. Bei der "Cursor" Analyse wurden im Code keine Verbindungen ins Internet gefunden.
   Trotzdem gilt: Ein Einsatz des Codes geschieht auf eigenes Risiko.
